@@ -38,6 +38,7 @@ enum class AgentCredentialMethod(override val raw: String) : RawEnum {
     GITHUB_TOKEN("github-token"),
     VERTEX_AI("vertex-ai"),
     BEDROCK("bedrock"),
+    LITELLM("litellm"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 
@@ -214,6 +215,7 @@ enum class ClaudeAuthMode(override val raw: String) : RawEnum {
     MAX_SUBSCRIPTION("max-subscription"),
     VERTEX_AI("vertex-ai"),
     BEDROCK("bedrock"),
+    LITELLM("litellm"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 
@@ -301,8 +303,8 @@ data class AgentTaskInput(
     val googleCloudLocation: String? = null,
     val claudeVertexServiceAccountKey: String? = null,
     /**
-     * Env that points the agent at a model provider (Bedrock), from
-     * `bedrockRuntime`; set with `claudeAuthMode` / `codexAuthMode` = "bedrock".
+     * Env that points the agent at a model provider, from `providerRuntime`;
+     * set with `claudeAuthMode` = "bedrock" / "litellm" or `codexAuthMode` = "bedrock".
      */
     val modelProviderEnv: Map<String, String>? = null,
     /** Codex `-c` overrides for the model provider (`model_provider="amazon-bedrock"`). */
@@ -2081,9 +2083,9 @@ sealed interface LocalTerminalSpec {
          */
         val baseBranch: String? = null,
         /**
-         * Reach the models through this provider (Amazon Bedrock) instead of
-         * the CLI's own sign-in, with the machine's own AWS credentials. Only
-         * sent to daemons whose hello set `modelProviders`.
+         * Reach the models through this provider instead of the CLI's own
+         * sign-in, with the machine's own credentials. Only sent to daemons
+         * whose hello set `modelProviders`.
          */
         val provider: ModelProviderLaunch? = null,
     ) : LocalTerminalSpec
@@ -3059,6 +3061,7 @@ data class UpdateInstalledSkillInput(
 @Serializable(with = ModelProviderKind.Companion::class)
 enum class ModelProviderKind(override val raw: String) : RawEnum {
     BEDROCK("bedrock"),
+    LITELLM("litellm"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 
@@ -3080,6 +3083,7 @@ enum class ModelProviderAgent(override val raw: String) : RawEnum {
  * - `access-key`: stored AWS access key id + secret (+ optional session token)
  * - `bearer-token`: a stored Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`)
  * - `ambient`: the pod's own AWS identity (IRSA / instance profile on EKS)
+ * - `api-key`: a stored LiteLLM key
  * - `none`: machines only — work in a pod can't use it
  */
 @Serializable(with = ModelProviderPodCredential.Companion::class)
@@ -3087,6 +3091,7 @@ enum class ModelProviderPodCredential(override val raw: String) : RawEnum {
     ACCESS_KEY("access-key"),
     BEARER_TOKEN("bearer-token"),
     AMBIENT("ambient"),
+    API_KEY("api-key"),
     NONE("none"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
@@ -3100,6 +3105,10 @@ data class ModelProviderModel(
     val id: String,
     /** Shown in pickers; the id when absent. */
     val label: String? = null,
+    /** Input tokens the model takes; absent = unknown (treated as 200k). */
+    val contextWindow: Double? = null,
+    /** Effort levels it accepts; absent = every level, empty = none. */
+    val efforts: List<String>? = null,
 )
 
 /** The models a provider offers each agent, in picker order; the first is the default. */
@@ -3131,12 +3140,16 @@ data class ModelProvider(
     val kind: ModelProviderKind,
     val name: String,
     val agents: List<ModelProviderAgent>,
-    /** AWS region the runtime calls (`us-west-2`). */
-    val region: String,
+    /** AWS region the runtime calls (`us-west-2`); Bedrock only. */
+    val region: String? = null,
+    /** The proxy's URL (`http://litellm.ai:4000`); LiteLLM only. */
+    val baseUrl: String? = null,
     /** The models offered for each agent, in picker order; the first is the default. */
     val models: ModelProviderModels,
     /** AWS profile to use on a machine; null = the machine's default AWS credentials. */
     val localAwsProfile: String? = null,
+    /** LiteLLM: the machine env var holding its key; null = the machine's own sign-in env. */
+    val localApiKeyEnv: String? = null,
     val podCredential: ModelProviderPodCredential,
     /** Whether stored pod credentials exist (the values are never returned). */
     val hasPodCredentials: Boolean,
@@ -3162,6 +3175,11 @@ sealed interface ModelProviderCredentials {
         val bearerToken: String,
     ) : ModelProviderCredentials
 
+    @Serializable
+    data class ApiKey(
+        val apiKey: String,
+    ) : ModelProviderCredentials
+
     /** Fallback for discriminator values this client does not know about yet. */
     data class Unknown(val raw: JsonElement) : ModelProviderCredentials
 
@@ -3169,12 +3187,14 @@ sealed interface ModelProviderCredentials {
         override fun decode(tag: String, element: JsonObject, json: Json): ModelProviderCredentials? = when (tag) {
             "access-key" -> json.decodeFromJsonElement(AccessKey.serializer(), element.withoutDiscriminator())
             "bearer-token" -> json.decodeFromJsonElement(BearerToken.serializer(), element.withoutDiscriminator())
+            "api-key" -> json.decodeFromJsonElement(ApiKey.serializer(), element.withoutDiscriminator())
             else -> null
         }
 
         override fun encode(value: ModelProviderCredentials, json: Json): JsonElement = when (value) {
             is AccessKey -> tagged("access-key", json.encodeToJsonElement(AccessKey.serializer(), value))
             is BearerToken -> tagged("bearer-token", json.encodeToJsonElement(BearerToken.serializer(), value))
+            is ApiKey -> tagged("api-key", json.encodeToJsonElement(ApiKey.serializer(), value))
             is Unknown -> value.raw
         }
 
@@ -3189,9 +3209,13 @@ data class CreateModelProviderInput(
     val owner: ResourceOwner,
     val kind: ModelProviderKind,
     val agents: List<ModelProviderAgent>,
-    val region: String,
+    /** Bedrock: required. */
+    val region: String? = null,
+    /** LiteLLM: required. */
+    val baseUrl: String? = null,
     val models: ModelProviderModels? = null,
     val localAwsProfile: String? = null,
+    val localApiKeyEnv: String? = null,
     val podCredential: ModelProviderPodCredential? = null,
     /** Replaces the stored pod credentials; null clears them; absent keeps them. */
     val credentials: ModelProviderCredentials? = null,
@@ -3205,8 +3229,10 @@ data class UpdateModelProviderInput(
     val owner: ResourceOwner? = null,
     val agents: List<ModelProviderAgent>? = null,
     val region: String? = null,
+    val baseUrl: String? = null,
     val models: ModelProviderModels? = null,
     val localAwsProfile: String? = null,
+    val localApiKeyEnv: String? = null,
     val podCredential: ModelProviderPodCredential? = null,
     /** Replaces the stored pod credentials; null clears them; absent keeps them. */
     val credentials: ModelProviderCredentials? = null,
@@ -3214,16 +3240,23 @@ data class UpdateModelProviderInput(
 
 /**
  * What a spawn on a machine carries to use a provider: never a credential,
- * only where to call and which of the machine's AWS profiles to use.
+ * only where to call and where on the machine its credentials are.
  */
 @Serializable
 data class ModelProviderLaunch(
     val kind: ModelProviderKind,
     val providerId: String,
     val name: String,
-    val region: String,
-    /** An AWS profile on the machine; absent = its default credentials. */
+    /** Bedrock. */
+    val region: String? = null,
+    /** Bedrock: an AWS profile on the machine; absent = its default credentials. */
     val awsProfile: String? = null,
+    /** LiteLLM. */
+    val baseUrl: String? = null,
+    /** LiteLLM: the machine env var holding its key; absent = the machine's own env. */
+    val apiKeyEnv: String? = null,
+    /** LiteLLM: the picked model, for Claude Code's internal calls and context window. */
+    val model: ModelProviderModel? = null,
 )
 
 // endregion

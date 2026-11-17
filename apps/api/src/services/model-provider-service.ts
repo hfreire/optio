@@ -1,16 +1,25 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import {
-  MODEL_PROVIDER_AGENTS,
+  MODEL_PROVIDER_KINDS,
   MODEL_PROVIDER_POD_CREDENTIALS,
-  bedrockRuntime,
+  findProviderModel,
   isModelProviderAgent,
+  isStoredPodCredential,
   isValidAwsProfileName,
   isValidAwsRegion,
+  isValidEnvVarName,
+  isValidProviderBaseUrl,
   modelProviderIdFrom,
+  modelProviderKindAgents,
+  modelProviderKindPodCredentials,
+  normalizeProviderBaseUrl,
+  providerModelContextWindow,
+  providerRuntime,
   type CreateModelProviderInput,
   type ModelProvider,
   type ModelProviderAgent,
   type ModelProviderCredentials,
+  type ModelProviderKind,
   type ModelProviderLaunch,
   type ModelProviderModel,
   type ModelProviderPodCredential,
@@ -19,17 +28,18 @@ import {
 import { db } from "../db/client.js";
 import { modelProviders, users } from "../db/schema.js";
 import { decrypt, encrypt } from "./secret-service.js";
+import { LitellmDiscoveryError, discoverLitellmModels } from "./litellm-models.js";
 
 /**
  * Model providers (Settings → Model providers): Amazon Bedrock for Claude
- * Code and Codex, owned by the organization (`owner_user_id` null) or by one
+ * Code and Codex, or a LiteLLM proxy for Claude Code, owned by the organization (`owner_user_id` null) or by one
  * person. Work picks one through `agentOptions.modelProvider`; see
  * `@optio/shared` `types/model-provider.ts` for the model.
  *
  * Who may use one: the organization's, by any work in the workspace; a
  * personal one, only by work its owner owns (and on its owner's machines).
  * Pod credentials are encrypted on the row and never leave the server for a
- * machine — a machine uses its own AWS profile.
+ * machine — a machine uses its own AWS profile or env var.
  */
 
 export type ModelProviderRow = typeof modelProviders.$inferSelect;
@@ -74,8 +84,10 @@ function toModelProvider(
     name: row.name,
     agents: row.agents.filter(isModelProviderAgent),
     region: row.region,
+    baseUrl: row.baseUrl,
     models: row.models,
     localAwsProfile: row.localAwsProfile,
+    localApiKeyEnv: row.localApiKeyEnv,
     podCredential: row.podCredential,
     hasPodCredentials: !!row.encryptedCredentials,
     mine,
@@ -142,7 +154,17 @@ function cleanModels(
       if (seen.has(id)) continue;
       seen.add(id);
       const label = m.label?.trim();
-      cleaned.push(label ? { id, label } : { id });
+      const model: ModelProviderModel = label ? { id, label } : { id };
+      if (m.contextWindow !== undefined) {
+        if (!Number.isInteger(m.contextWindow) || m.contextWindow <= 0) {
+          throw new ModelProviderError(`Model "${id}" has an invalid context window`);
+        }
+        model.contextWindow = m.contextWindow;
+      }
+      if (m.efforts !== undefined) {
+        model.efforts = [...new Set(m.efforts.map((e) => e.trim()).filter(Boolean))];
+      }
+      cleaned.push(model);
     }
     out[agent] = cleaned;
   }
@@ -162,8 +184,12 @@ function validateCredentials(
     if (!credentials.accessKeyId?.trim() || !credentials.secretAccessKey?.trim()) {
       throw new ModelProviderError("An AWS access key needs both the key id and the secret");
     }
-  } else if (!credentials.bearerToken?.trim()) {
-    throw new ModelProviderError("The Bedrock API key is empty");
+  } else if (credentials.type === "bearer-token") {
+    if (!credentials.bearerToken?.trim()) {
+      throw new ModelProviderError("The Bedrock API key is empty");
+    }
+  } else if (!credentials.apiKey?.trim()) {
+    throw new ModelProviderError("The LiteLLM key is empty");
   }
 }
 
@@ -171,11 +197,16 @@ interface NormalizedFields {
   name?: string;
   agents?: ModelProviderAgent[];
   region?: string;
+  baseUrl?: string;
   localAwsProfile?: string | null;
+  localApiKeyEnv?: string | null;
   podCredential?: ModelProviderPodCredential;
 }
 
-function normalizeFields(input: UpdateModelProviderInput): NormalizedFields {
+function normalizeFields(
+  kind: ModelProviderKind,
+  input: UpdateModelProviderInput,
+): NormalizedFields {
   const out: NormalizedFields = {};
   if (input.name !== undefined) {
     const name = input.name.trim();
@@ -183,22 +214,38 @@ function normalizeFields(input: UpdateModelProviderInput): NormalizedFields {
     out.name = name;
   }
   if (input.agents !== undefined) {
-    const agents = [...new Set(input.agents)].filter(isModelProviderAgent);
+    const served = modelProviderKindAgents(kind);
+    const agents = [...new Set(input.agents)].filter((a) => served.includes(a));
     if (agents.length === 0) {
       throw new ModelProviderError(
-        `Pick at least one agent (${MODEL_PROVIDER_AGENTS.join(", ")}) for the provider`,
+        `Pick at least one agent (${served.join(", ")}) for the provider`,
       );
     }
     out.agents = agents;
   }
-  if (input.region !== undefined) {
+  if (input.region !== undefined && kind === "bedrock") {
     const region = input.region.trim();
     if (!isValidAwsRegion(region)) {
       throw new ModelProviderError(`"${region}" isn't an AWS region (like us-west-2)`);
     }
     out.region = region;
   }
-  if (input.localAwsProfile !== undefined) {
+  if (input.baseUrl !== undefined && kind === "litellm") {
+    if (!isValidProviderBaseUrl(input.baseUrl)) {
+      throw new ModelProviderError(
+        `"${input.baseUrl}" isn't an http(s) URL (like http://litellm.ai:4000)`,
+      );
+    }
+    out.baseUrl = normalizeProviderBaseUrl(input.baseUrl);
+  }
+  if (input.localApiKeyEnv !== undefined && kind === "litellm") {
+    const name = input.localApiKeyEnv?.trim() || null;
+    if (name && !isValidEnvVarName(name)) {
+      throw new ModelProviderError(`"${name}" isn't an environment variable name`);
+    }
+    out.localApiKeyEnv = name;
+  }
+  if (input.localAwsProfile !== undefined && kind === "bedrock") {
     const p = input.localAwsProfile?.trim() || null;
     if (p && !isValidAwsProfileName(p)) {
       throw new ModelProviderError(`"${p}" isn't an AWS profile name`);
@@ -208,6 +255,11 @@ function normalizeFields(input: UpdateModelProviderInput): NormalizedFields {
   if (input.podCredential !== undefined) {
     if (!MODEL_PROVIDER_POD_CREDENTIALS.includes(input.podCredential)) {
       throw new ModelProviderError(`Unknown pod credential "${input.podCredential}"`);
+    }
+    if (!modelProviderKindPodCredentials(kind).includes(input.podCredential)) {
+      throw new ModelProviderError(
+        `A ${kind} provider can't sign pods in with ${input.podCredential}`,
+      );
     }
     out.podCredential = input.podCredential;
   }
@@ -223,7 +275,7 @@ function sealCredentials(id: string, credentials: ModelProviderCredentials) {
   };
 }
 
-function openCredentials(row: ModelProviderRow): ModelProviderCredentials | null {
+export function openCredentials(row: ModelProviderRow): ModelProviderCredentials | null {
   if (!row.encryptedCredentials || !row.credentialsIv || !row.credentialsAuthTag) return null;
   const json = decrypt(
     {
@@ -257,17 +309,25 @@ export async function createModelProvider(
   input: CreateModelProviderInput,
   viewer: ProviderViewer,
 ): Promise<ModelProvider> {
-  if (input.kind !== "bedrock") throw new ModelProviderError(`Unknown provider "${input.kind}"`);
+  if (!MODEL_PROVIDER_KINDS.includes(input.kind)) {
+    throw new ModelProviderError(`Unknown provider "${input.kind}"`);
+  }
+  const kind = input.kind;
   // Auth-disabled dev has no user to own a personal provider: it's the org's.
   const ownerUserId = input.owner === "me" && viewer.userId ? viewer.userId : null;
   if (!ownerUserId && !viewer.isAdmin) {
     throw new ModelProviderError("Only admins can add a model provider for the organization", 403);
   }
-  const fields = normalizeFields({ ...input, agents: input.agents ?? [], region: input.region });
+  const fields = normalizeFields(kind, {
+    ...input,
+    agents: input.agents ?? [],
+    region: input.region ?? "",
+    baseUrl: input.baseUrl ?? "",
+  });
   const agents = fields.agents!;
   const podCredential = fields.podCredential ?? "none";
   if (input.credentials) validateCredentials(podCredential, input.credentials);
-  if (podCredential !== "none" && podCredential !== "ambient" && !input.credentials) {
+  if (isStoredPodCredential(podCredential) && !input.credentials) {
     throw new ModelProviderError(
       "Add the pod credentials, or pick another way for pods to sign in",
     );
@@ -278,17 +338,19 @@ export async function createModelProvider(
       workspaceId: viewer.workspaceId,
       ownerUserId,
       createdBy: viewer.userId,
-      kind: "bedrock",
+      kind,
       name: fields.name!,
       agents,
-      region: fields.region!,
+      region: fields.region ?? null,
+      baseUrl: fields.baseUrl ?? null,
       models: cleanModels(input.models, agents),
       localAwsProfile: fields.localAwsProfile ?? null,
+      localApiKeyEnv: fields.localApiKeyEnv ?? null,
       podCredential,
     })
     .returning();
   let saved = row;
-  if (input.credentials && (podCredential === "access-key" || podCredential === "bearer-token")) {
+  if (input.credentials && isStoredPodCredential(podCredential)) {
     [saved] = await db
       .update(modelProviders)
       .set(sealCredentials(row.id, input.credentials))
@@ -307,11 +369,13 @@ export async function updateModelProvider(
   const row = await getModelProviderRow(id);
   if (!row) throw new ModelProviderError("Model provider not found", 404);
   assertCanEdit(row, viewer);
-  const fields = normalizeFields(input);
+  const fields = normalizeFields(row.kind, input);
   const updates: Partial<typeof modelProviders.$inferInsert> = { updatedAt: new Date() };
   if (fields.name !== undefined) updates.name = fields.name;
   if (fields.region !== undefined) updates.region = fields.region;
+  if (fields.baseUrl !== undefined) updates.baseUrl = fields.baseUrl;
   if (fields.localAwsProfile !== undefined) updates.localAwsProfile = fields.localAwsProfile;
+  if (fields.localApiKeyEnv !== undefined) updates.localApiKeyEnv = fields.localApiKeyEnv;
   const agents = fields.agents ?? row.agents.filter(isModelProviderAgent);
   if (fields.agents !== undefined) updates.agents = agents;
   if (input.models !== undefined || fields.agents !== undefined) {
@@ -333,7 +397,7 @@ export async function updateModelProvider(
   }
   const podCredential = fields.podCredential ?? row.podCredential;
   if (fields.podCredential !== undefined) updates.podCredential = podCredential;
-  if (input.credentials === null || podCredential === "none" || podCredential === "ambient") {
+  if (input.credentials === null || !isStoredPodCredential(podCredential)) {
     updates.encryptedCredentials = null;
     updates.credentialsIv = null;
     updates.credentialsAuthTag = null;
@@ -360,6 +424,43 @@ export async function deleteModelProvider(id: string, viewer: ProviderViewer): P
     assertCanEdit(row, viewer);
   }
   await db.delete(modelProviders).where(eq(modelProviders.id, id));
+}
+
+export interface DiscoverModelsInput {
+  kind: "litellm";
+  baseUrl: string;
+  apiKey?: string;
+  /** A saved provider whose stored key to use when no key is given. */
+  providerId?: string;
+}
+
+/** The models a LiteLLM proxy offers the key, for the Settings form to fill in. */
+export async function discoverProviderModels(
+  input: DiscoverModelsInput,
+  viewer: ProviderViewer,
+): Promise<ModelProviderModel[]> {
+  if (!isValidProviderBaseUrl(input.baseUrl)) {
+    throw new ModelProviderError(`"${input.baseUrl}" isn't an http(s) URL`);
+  }
+  let apiKey = input.apiKey?.trim();
+  if (!apiKey && input.providerId) {
+    const row = await getModelProviderRow(input.providerId);
+    if (!row) throw new ModelProviderError("Model provider not found", 404);
+    assertCanEdit(row, viewer);
+    // The stored key only ever goes where the provider already sends it.
+    if (row.baseUrl !== normalizeProviderBaseUrl(input.baseUrl)) {
+      throw new ModelProviderError("Enter the key again to list the models at a new URL");
+    }
+    const stored = openCredentials(row);
+    apiKey = stored?.type === "api-key" ? stored.apiKey : undefined;
+  }
+  if (!apiKey) throw new ModelProviderError("Add the LiteLLM key to list its models");
+  try {
+    return await discoverLitellmModels(normalizeProviderBaseUrl(input.baseUrl), apiKey);
+  } catch (err) {
+    if (err instanceof LitellmDiscoveryError) throw new ModelProviderError(err.message);
+    throw err;
+  }
 }
 
 // ── Use by work ──────────────────────────────────────────────────────────────
@@ -399,7 +500,7 @@ export async function resolveProviderForWork(use: ProviderUse): Promise<ModelPro
   }
   if (
     use.runsOn === "pod" &&
-    (row.podCredential === "access-key" || row.podCredential === "bearer-token") &&
+    isStoredPodCredential(row.podCredential) &&
     !row.encryptedCredentials
   ) {
     throw new ModelProviderError(`"${row.name}" has no pod credentials stored`);
@@ -418,26 +519,68 @@ export async function providerSelectionError(use: ProviderUse): Promise<string |
   }
 }
 
-/** What a spawn on a machine carries: where to call, which AWS profile — no credentials. */
-export function providerLaunch(row: ModelProviderRow): ModelProviderLaunch {
+function pickedModel(
+  row: ModelProviderRow,
+  agentType: ModelProviderAgent,
+  modelId: string | null | undefined,
+): ModelProviderModel | undefined {
+  return (
+    findProviderModel(row.models, agentType, modelId) ?? (modelId ? { id: modelId } : undefined)
+  );
+}
+
+/**
+ * What a spawn on a machine carries: where to call, which AWS profile or env
+ * var holds the machine's own key — no credentials.
+ */
+export function providerLaunch(
+  row: ModelProviderRow,
+  agentType?: string,
+  modelId?: string | null,
+): ModelProviderLaunch {
+  const base = { kind: row.kind, providerId: row.id, name: row.name };
+  if (row.kind === "litellm") {
+    const model =
+      agentType && isModelProviderAgent(agentType)
+        ? pickedModel(row, agentType, modelId)
+        : undefined;
+    return {
+      ...base,
+      baseUrl: row.baseUrl ?? "",
+      ...(row.localApiKeyEnv ? { apiKeyEnv: row.localApiKeyEnv } : {}),
+      ...(model ? { model } : {}),
+    };
+  }
   return {
-    kind: row.kind,
-    providerId: row.id,
-    name: row.name,
-    region: row.region,
+    ...base,
+    region: row.region ?? "",
     ...(row.localAwsProfile ? { awsProfile: row.localAwsProfile } : {}),
   };
+}
+
+export interface PodProviderRuntime {
+  env: Record<string, string>;
+  codexConfig: string[];
+  /** The auth mode the agent adapter runs in. */
+  authMode: ModelProviderKind;
+  /** Overrides the work's Claude context window: a proxy model only gets `[1m]` when it takes 1M. */
+  claudeContextWindow?: "200k" | "1m";
 }
 
 /** The env + Codex overrides a pod run gets for the provider, credentials included. */
 export function podProviderRuntime(
   row: ModelProviderRow,
   agentType: string,
-): { env: Record<string, string>; codexConfig: string[] } {
-  if (!isModelProviderAgent(agentType)) return { env: {}, codexConfig: [] };
-  const credentials =
-    row.podCredential === "access-key" || row.podCredential === "bearer-token"
-      ? openCredentials(row)
-      : null;
-  return bedrockRuntime(agentType, { region: row.region }, credentials);
+  modelId?: string | null,
+): PodProviderRuntime {
+  if (!isModelProviderAgent(agentType)) return { env: {}, codexConfig: [], authMode: row.kind };
+  const credentials = isStoredPodCredential(row.podCredential) ? openCredentials(row) : null;
+  const launch = providerLaunch(row, agentType, modelId);
+  const runtime = providerRuntime(agentType, launch, credentials);
+  if (row.kind !== "litellm") return { ...runtime, authMode: row.kind };
+  return {
+    ...runtime,
+    authMode: row.kind,
+    claudeContextWindow: providerModelContextWindow(launch.model ?? { id: "" }),
+  };
 }

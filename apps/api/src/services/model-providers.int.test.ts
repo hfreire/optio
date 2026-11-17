@@ -12,6 +12,7 @@ import { insertWorkspace } from "../test-utils/integration/fixtures.js";
 import { foundingWorkspaceId } from "./founding-workspace.js";
 import {
   createModelProvider,
+  discoverProviderModels,
   listModelProviders,
   podProviderRuntime,
   providerLaunch,
@@ -126,6 +127,111 @@ describe("model providers", () => {
         runsOn: "pod",
       }),
     ).rejects.toThrow(/no pod credentials/);
+  });
+
+  const litellm = (extra: Record<string, unknown> = {}) => ({
+    name: "Home LiteLLM",
+    owner: "workspace" as const,
+    kind: "litellm" as const,
+    agents: ["claude-code" as const, "codex" as const],
+    baseUrl: "http://litellm.ai:4000/",
+    region: "us-west-2",
+    localApiKeyEnv: "LITELLM_API_KEY",
+    podCredential: "api-key" as const,
+    credentials: { type: "api-key" as const, apiKey: "sk-litellm" },
+    models: {
+      "claude-code": [
+        { id: "local-coder", contextWindow: 262144, efforts: ["low", "high"] },
+        { id: "big", contextWindow: 1_000_000 },
+      ],
+    },
+    ...extra,
+  });
+
+  it("runs Claude Code in pods through a LiteLLM proxy pinned to the picked model", async () => {
+    const p = await createModelProvider(litellm(), admin);
+    expect(p).toMatchObject({
+      kind: "litellm",
+      agents: ["claude-code"],
+      region: null,
+      baseUrl: "http://litellm.ai:4000",
+      hasPodCredentials: true,
+    });
+    expect(JSON.stringify(p)).not.toContain("sk-litellm");
+
+    const row = await resolveProviderForWork({
+      agentType: "claude-code",
+      agentOptions: { modelProvider: p.id },
+      workspaceId: ws,
+      ownerUserId: null,
+      runsOn: "pod",
+    });
+    const runtime = podProviderRuntime(row!, "claude-code", "local-coder");
+    expect(runtime.authMode).toBe("litellm");
+    expect(runtime.claudeContextWindow).toBe("200k");
+    expect(runtime.env).toMatchObject({
+      ANTHROPIC_BASE_URL: "http://litellm.ai:4000",
+      ANTHROPIC_AUTH_TOKEN: "sk-litellm",
+      ANTHROPIC_SMALL_FAST_MODEL: "local-coder",
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: "262144",
+    });
+    expect(podProviderRuntime(row!, "claude-code", "big").claudeContextWindow).toBe("1m");
+
+    await expect(
+      resolveProviderForWork({
+        agentType: "codex",
+        agentOptions: { modelProvider: p.id },
+        workspaceId: ws,
+        ownerUserId: null,
+        runsOn: "pod",
+      }),
+    ).rejects.toThrow(ModelProviderError);
+  });
+
+  it("gives machines the proxy URL and the key's env var name, never the key", async () => {
+    const p = await createModelProvider(litellm(), admin);
+    const row = await resolveProviderForWork({
+      agentType: "claude-code",
+      agentOptions: { modelProvider: p.id },
+      workspaceId: ws,
+      ownerUserId: alice.userId,
+      runsOn: "local",
+    });
+    const launch = providerLaunch(row!, "claude-code", "local-coder");
+    expect(launch).toEqual({
+      kind: "litellm",
+      providerId: p.id,
+      name: "Home LiteLLM",
+      baseUrl: "http://litellm.ai:4000",
+      apiKeyEnv: "LITELLM_API_KEY",
+      model: { id: "local-coder", contextWindow: 262144, efforts: ["low", "high"] },
+    });
+    expect(JSON.stringify(launch)).not.toContain("sk-litellm");
+  });
+
+  it("refuses a LiteLLM provider without a valid URL or env var name", async () => {
+    await expect(createModelProvider(litellm({ baseUrl: "ftp://x" }), admin)).rejects.toThrow(
+      ModelProviderError,
+    );
+    await expect(createModelProvider(litellm({ localApiKeyEnv: "X; rm" }), admin)).rejects.toThrow(
+      ModelProviderError,
+    );
+  });
+
+  it("only sends a stored key to the URL it was saved for", async () => {
+    const p = await createModelProvider(litellm(), admin);
+    await expect(
+      discoverProviderModels(
+        { kind: "litellm", baseUrl: "http://evil.example:4000", providerId: p.id },
+        admin,
+      ),
+    ).rejects.toThrow(/Enter the key again/);
+    await expect(
+      discoverProviderModels(
+        { kind: "litellm", baseUrl: "http://litellm.ai:4000", providerId: p.id },
+        bob,
+      ),
+    ).rejects.toThrow(ModelProviderError);
   });
 
   it("gives machines only the region and the AWS profile", async () => {

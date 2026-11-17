@@ -3,11 +3,15 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { Check, Eye, EyeOff, ExternalLink } from "lucide-react";
-import type {
-  AgentCredential,
-  AgentCredentialMethodOption,
-  ResourceOwner,
-  VerifyAgentCredentialResult,
+import {
+  MODEL_PROVIDER_KINDS,
+  isModelProviderAgent,
+  modelProviderKindAgents,
+  type AgentCredential,
+  type AgentCredentialMethodOption,
+  type ModelProviderKind,
+  type ResourceOwner,
+  type VerifyAgentCredentialResult,
 } from "@optio/shared";
 import { api } from "@/lib/api-client";
 import { ownerOf, scopeOf } from "@/lib/owner";
@@ -16,8 +20,21 @@ import { inputClass } from "@/components/ui/input";
 import { OwnerPicker } from "@/components/ui/owner-picker";
 import { Segmented } from "@/components/ui/segmented";
 
-/** The pseudo-method that explains where Bedrock providers are made. */
-const BEDROCK = "__bedrock__";
+/** Pseudo-methods that explain where model providers are made. */
+const providerMethod = (kind: ModelProviderKind) => `__provider:${kind}__`;
+
+const PROVIDER_KIND_TEXT: Record<ModelProviderKind, { label: string; about: string }> = {
+  bedrock: {
+    label: "Amazon Bedrock…",
+    about:
+      "Amazon Bedrock is a model provider: a region, the models it offers {agent}, and the AWS credentials a pod signs in with.",
+  },
+  litellm: {
+    label: "LiteLLM…",
+    about:
+      "A LiteLLM proxy is a model provider: its URL, the models it offers {agent} (fetched from the proxy), and the key a pod signs in with.",
+  },
+};
 
 const FIELD_LABEL: Record<AgentCredentialMethodOption["input"], string> = {
   token: "Key or token",
@@ -28,8 +45,8 @@ const FIELD_LABEL: Record<AgentCredentialMethodOption["input"], string> = {
 /**
  * `+` on the "Signed in with" row: store a sign-in secret for the agent — a
  * key, a token, an app-server URL — as the organization's or your own, and
- * pick it. The value is sent once and never shown again. Bedrock is a model
- * provider, made in Settings.
+ * pick it. The value is sent once and never shown again. Bedrock and LiteLLM
+ * are model providers, made in Settings.
  */
 export function AddCredentialDialog({
   agentType,
@@ -48,7 +65,12 @@ export function AddCredentialDialog({
   onClose: () => void;
   onAdded: (credential: AgentCredential) => void;
 }) {
-  const [method, setMethod] = useState<string>(addable[0]?.secretName ?? BEDROCK);
+  const providerKinds = MODEL_PROVIDER_KINDS.filter(
+    (k) => isModelProviderAgent(agentType) && modelProviderKindAgents(k).includes(agentType),
+  );
+  const [method, setMethod] = useState<string>(
+    addable[0]?.secretName ?? providerMethod(providerKinds[0] ?? "bedrock"),
+  );
   const [value, setValue] = useState("");
   const [owner, setOwner] = useState<ResourceOwner>(isAdmin ? initialOwner : "me");
   const [show, setShow] = useState(false);
@@ -117,8 +139,13 @@ export function AddCredentialDialog({
       label: o.label,
       testId: `credential-method-${o.secretName}`,
     })),
-    { value: BEDROCK, label: "Amazon Bedrock…", testId: "credential-method-bedrock" },
+    ...providerKinds.map((k) => ({
+      value: providerMethod(k),
+      label: PROVIDER_KIND_TEXT[k].label,
+      testId: `credential-method-${k}`,
+    })),
   ];
+  const pickedKind = providerKinds.find((k) => providerMethod(k) === method) ?? "bedrock";
 
   return (
     <Dialog
@@ -283,9 +310,8 @@ export function AddCredentialDialog({
         ) : (
           <div className="space-y-2 text-sm text-text-muted">
             <p>
-              Amazon Bedrock is a <strong className="text-text">model provider</strong>: a region,
-              the models it offers {agentLabel}, and the AWS credentials a pod signs in with. Once
-              one is set up it appears here as a sign-in.
+              {PROVIDER_KIND_TEXT[pickedKind].about.replace("{agent}", agentLabel)} Once one is set
+              up it appears here as a sign-in.
             </p>
             {bedrockOnly && (
               <p>{agentLabel} has no key or token to add here; its sign-in is a provider.</p>
@@ -293,7 +319,7 @@ export function AddCredentialDialog({
             <Link
               href="/settings#model-providers"
               className="inline-flex items-center gap-1 text-primary hover:underline"
-              data-testid="credential-bedrock-link"
+              data-testid="credential-provider-link"
             >
               Set up a model provider in Settings
               <ExternalLink className="h-3.5 w-3.5" />

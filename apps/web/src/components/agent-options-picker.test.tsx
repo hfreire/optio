@@ -213,3 +213,42 @@ describe("AgentOptionsPicker on a machine", () => {
     expect(onChange).toHaveBeenLastCalledWith({ copilotModel: "gpt-5.7", copilotEffort: "" });
   });
 });
+
+describe("AgentOptionsPicker with a proxy provider's models", () => {
+  const providerModels = [
+    { id: "local-coder", contextWindow: 262144, efforts: ["low", "medium", "high"] },
+    { id: "plain" },
+  ];
+
+  it("offers the picked model's own efforts and says its context window", () => {
+    render(
+      <AgentOptionsPicker
+        provider="anthropic"
+        values={{ claudeModel: "local-coder" }}
+        onChange={vi.fn()}
+        providerModels={providerModels}
+      />,
+    );
+    const effort = screen.getByLabelText("Effort Level");
+    expect(
+      within(effort)
+        .getAllByRole("option")
+        .map((o) => o.getAttribute("value")),
+    ).toEqual(["low", "medium", "high"]);
+    expect(screen.queryByLabelText("Context Window")).not.toBeInTheDocument();
+    expect(screen.getByText(/262K tokens, from the provider/)).toBeInTheDocument();
+  });
+
+  it("keeps the catalog's choices for a model the provider says nothing about", () => {
+    render(
+      <AgentOptionsPicker
+        provider="anthropic"
+        values={{ claudeModel: "plain" }}
+        onChange={vi.fn()}
+        providerModels={providerModels}
+      />,
+    );
+    expect(screen.getByLabelText("Context Window")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Effort Level")).getAllByRole("option")).toHaveLength(5);
+  });
+});

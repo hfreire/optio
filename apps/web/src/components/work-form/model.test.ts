@@ -495,6 +495,8 @@ const provider = (over: Partial<ModelProvider> = {}): ModelProvider => ({
     codex: [{ id: "openai.gpt-5.5" }],
   },
   localAwsProfile: null,
+  baseUrl: null,
+  localApiKeyEnv: null,
   podCredential: "access-key",
   hasPodCredentials: true,
   mine: false,

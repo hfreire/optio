@@ -274,10 +274,10 @@ export interface CreateTerminalInput {
   /** The session this terminal resumes (`resumeTerminal`). */
   resumedFromTerminalId?: string;
   /**
-   * Run the agent through this model provider (Bedrock), from the work's
-   * agent options. Checked here against the terminal's owner; the spec then
-   * carries the provider's launch (region, the machine's AWS profile — never
-   * a credential). A `spec.provider` from a client counts only by its id.
+   * Run the agent through this model provider, from the work's agent
+   * options. Checked here against the terminal's owner; the spec then carries
+   * the provider's launch (region and AWS profile, or proxy URL and key env
+   * var name — never a credential). A `spec.provider` from a client counts only by its id.
    */
   modelProviderId?: string;
 }
@@ -315,7 +315,7 @@ export async function createTerminal(input: CreateTerminalInput): Promise<LocalT
         ownerUserId: input.userId,
         runsOn: "local",
       });
-      if (row) spec = { ...spec, provider: providerLaunch(row) };
+      if (row) spec = { ...spec, provider: providerLaunch(row, spec.agent, spec.model) };
     }
   }
   // "New branch that becomes a PR": the id is fixed up front so the branch

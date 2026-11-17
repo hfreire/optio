@@ -151,9 +151,23 @@ describe("AddCredentialDialog", () => {
     fireEvent.click(screen.getByTestId("credential-method-bedrock"));
     expect(screen.queryByTestId("credential-value")).toBeNull();
     expect(screen.queryByTestId("credential-save")).toBeNull();
-    expect(screen.getByTestId("credential-bedrock-link")).toHaveAttribute(
+    expect(screen.getByTestId("credential-provider-link")).toHaveAttribute(
       "href",
       "/settings#model-providers",
     );
+  });
+
+  it("offers LiteLLM to Claude Code only, pointing at Settings too", () => {
+    mount();
+    fireEvent.click(screen.getByTestId("credential-method-litellm"));
+    expect(screen.getByText(/LiteLLM proxy/)).toBeInTheDocument();
+    expect(screen.getByTestId("credential-provider-link")).toHaveAttribute(
+      "href",
+      "/settings#model-providers",
+    );
+    cleanup();
+    mount({ agentType: "codex", agentLabel: "Codex", addable: [] });
+    expect(screen.queryByTestId("credential-method-litellm")).toBeNull();
+    expect(screen.getByTestId("credential-method-bedrock")).toBeInTheDocument();
   });
 });

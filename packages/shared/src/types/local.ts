@@ -213,9 +213,9 @@ export type LocalTerminalSpec =
        */
       baseBranch?: string;
       /**
-       * Reach the models through this provider (Amazon Bedrock) instead of
-       * the CLI's own sign-in, with the machine's own AWS credentials. Only
-       * sent to daemons whose hello set `modelProviders`.
+       * Reach the models through this provider instead of the CLI's own
+       * sign-in, with the machine's own credentials. Only sent to daemons
+       * whose hello set `modelProviders`.
        */
       provider?: ModelProviderLaunch;
     };

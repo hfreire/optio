@@ -507,16 +507,17 @@ export function startTaskWorker() {
               runsOn: "pod",
             });
         const providerRuntime = providerRow
-          ? podProviderRuntime(providerRow, task.agentType)
+          ? podProviderRuntime(providerRow, task.agentType, finalClaudeModel)
           : null;
         if (providerRow) log.info({ provider: providerRow.name }, "Using model provider");
+        const runClaudeAuthMode = providerRuntime?.authMode ?? claudeAuthMode;
 
         const agentConfig = adapter.buildContainerConfig({
           taskId: task.id,
           prompt: task.prompt,
           repoUrl: task.repoUrl,
           repoBranch: task.repoBranch,
-          claudeAuthMode: providerRuntime ? "bedrock" : claudeAuthMode,
+          claudeAuthMode: runClaudeAuthMode,
           codexAuthMode: providerRuntime ? "bedrock" : codexAuthMode,
           codexAppServerUrl,
           modelProviderEnv: providerRuntime?.env,
@@ -526,7 +527,7 @@ export function startTaskWorker() {
           taskFileContent: finalTaskFileContent,
           taskFilePath: finalTaskFilePath,
           claudeModel: finalClaudeModel,
-          claudeContextWindow: opt("claudeContextWindow"),
+          claudeContextWindow: providerRuntime?.claudeContextWindow ?? opt("claudeContextWindow"),
           claudeEffort: opt("claudeEffort"),
           copilotModel: copilotOpt("copilotModel"),
           copilotEffort: copilotOpt("copilotEffort"),
@@ -649,7 +650,7 @@ export function startTaskWorker() {
         }
 
         // For max-subscription mode, fetch the OAuth token from the auth proxy
-        if (task.agentType !== "pi" && claudeAuthMode === "max-subscription") {
+        if (task.agentType !== "pi" && runClaudeAuthMode === "max-subscription") {
           const { getClaudeAuthToken } = await import("../services/auth-service.js");
           const authResult = getClaudeAuthToken();
           if (authResult.available && authResult.token) {
@@ -663,7 +664,7 @@ export function startTaskWorker() {
         }
 
         // For oauth-token mode, read the token from the secrets store
-        if (task.agentType !== "pi" && claudeAuthMode === "oauth-token") {
+        if (task.agentType !== "pi" && runClaudeAuthMode === "oauth-token") {
           // Pre-flight: check the cached validation from the background worker
           // to fail fast before wasting ~10s on pod provisioning + worktree setup
           try {

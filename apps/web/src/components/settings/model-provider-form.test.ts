@@ -24,6 +24,8 @@ const saved: ModelProvider = {
   region: "us-west-2",
   models: { "claude-code": [{ id: "us.anthropic.claude-opus-5-5", label: "Opus 5.5" }] },
   localAwsProfile: null,
+  baseUrl: null,
+  localApiKeyEnv: null,
   podCredential: "access-key",
   hasPodCredentials: true,
   mine: false,
@@ -106,5 +108,77 @@ describe("model provider form", () => {
   it("labels pod sign-in for the list", () => {
     expect(podsLabel({ podCredential: "bearer-token" })).toBe("Pods: API key");
     expect(podsLabel({ podCredential: "none" })).toBe("Machines only");
+  });
+});
+
+describe("LiteLLM provider form", () => {
+  const litellmSaved: ModelProvider = {
+    ...saved,
+    kind: "litellm",
+    name: "Home LiteLLM",
+    region: null,
+    baseUrl: "http://litellm.ai:4000",
+    localApiKeyEnv: "LITELLM_API_KEY",
+    podCredential: "api-key",
+    models: { "claude-code": [{ id: "local-coder", contextWindow: 262144, efforts: ["low"] }] },
+  };
+
+  it("starts as a Claude Code proxy with an API key for pods", () => {
+    const f = emptyProviderForm(true, "litellm");
+    expect(f).toMatchObject({
+      kind: "litellm",
+      name: "LiteLLM",
+      agents: ["claude-code"],
+      podCredential: "api-key",
+      localApiKeyEnv: "LITELLM_API_KEY",
+      models: { "claude-code": [] },
+    });
+  });
+
+  it("needs a URL, a key for pods, and a valid env var name", () => {
+    const f = emptyProviderForm(true, "litellm");
+    expect(validateProviderForm(f, true)).toMatch(/URL/);
+    const withUrl = { ...f, baseUrl: "http://litellm.ai:4000" };
+    expect(validateProviderForm(withUrl, true)).toMatch(/LiteLLM key/);
+    const withKey = { ...withUrl, apiKey: "sk-1" };
+    expect(validateProviderForm(withKey, true)).toBeNull();
+    expect(validateProviderForm({ ...withKey, localApiKeyEnv: "not ok" }, true)).toMatch(/env var/);
+    expect(validateProviderForm({ ...withKey, baseUrl: "litellm:4000" }, true)).toMatch(/URL/);
+  });
+
+  it("sends the URL, the key and the env var, no region", () => {
+    const f = {
+      ...emptyProviderForm(true, "litellm"),
+      baseUrl: " http://litellm.ai:4000/ ",
+      apiKey: " sk-1 ",
+    };
+    const input = toCreateInput(f);
+    expect(input).toMatchObject({
+      kind: "litellm",
+      agents: ["claude-code"],
+      baseUrl: "http://litellm.ai:4000",
+      localApiKeyEnv: "LITELLM_API_KEY",
+      podCredential: "api-key",
+      credentials: { type: "api-key", apiKey: "sk-1" },
+    });
+    expect(input).not.toHaveProperty("region");
+    expect(input).not.toHaveProperty("localAwsProfile");
+  });
+
+  it("keeps a saved model's context window and efforts through the textarea", () => {
+    const f = formFromProvider(litellmSaved);
+    expect(f.baseUrl).toBe("http://litellm.ai:4000");
+    const text = formatModels(f.models["claude-code"]);
+    expect(parseModels(`${text}\nnew-one`, f.models["claude-code"])).toEqual([
+      { id: "local-coder", contextWindow: 262144, efforts: ["low"] },
+      { id: "new-one" },
+    ]);
+  });
+
+  it("labels its pods credential", () => {
+    expect(podsLabel(litellmSaved)).toBe("Pods: API key");
+    expect(toUpdateInput(formFromProvider(litellmSaved), litellmSaved)).not.toHaveProperty(
+      "credentials",
+    );
   });
 });

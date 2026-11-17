@@ -342,8 +342,8 @@ export async function listAgentCredentials(
     .map((p): AgentCredential => ({
       id: `provider:${p.id}`,
       kind: "provider",
-      method: "bedrock",
-      label: `Amazon Bedrock · ${p.name}`,
+      method: p.kind,
+      label: `${p.kind === "litellm" ? "LiteLLM" : "Amazon Bedrock"} · ${p.name}`,
       secretName: null,
       providerId: p.id,
       owner: p.ownerUserId ? "me" : "workspace",

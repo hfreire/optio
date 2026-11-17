@@ -21,6 +21,7 @@ const MethodSchema = z.enum([
   "github-token",
   "vertex-ai",
   "bedrock",
+  "litellm",
 ]);
 const AgentTypeSchema = z.string().min(1).max(40);
 const SecretNameSchema = z.string().min(1).max(100);

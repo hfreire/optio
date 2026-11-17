@@ -79,9 +79,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         env.GOOGLE_APPLICATION_CREDENTIALS = "/home/agent/.config/gcloud/gsa-key.json";
       }
       // When no key is provided, rely on workload identity (GKE) or pre-mounted ADC
-    } else if (authMode === "bedrock") {
-      // A model provider (Amazon Bedrock): CLAUDE_CODE_USE_BEDROCK + region +
-      // AWS credentials, from bedrockRuntime() — no Anthropic key needed.
+    } else if (authMode === "bedrock" || authMode === "litellm") {
+      // A model provider, from providerRuntime(): Bedrock's region + AWS
+      // credentials, or a LiteLLM URL + key — no Anthropic key needed.
       Object.assign(env, input.modelProviderEnv ?? {});
     }
 
