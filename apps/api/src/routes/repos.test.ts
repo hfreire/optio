@@ -395,6 +395,20 @@ describe("PATCH /api/repos/:id", () => {
       expect(mockUpdateRepo).not.toHaveBeenCalled();
     });
 
+    it("doesn't check the provider again when it isn't changing", async () => {
+      mockGetRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: providerId });
+      mockUpdateRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: providerId });
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: providerId, maxTurnsCoding: 100 },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRepoModelProviderError).not.toHaveBeenCalled();
+    });
+
     it("clears it with null, unchecked", async () => {
       mockGetRepo.mockResolvedValue(mockRepoData);
       mockUpdateRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: null });
