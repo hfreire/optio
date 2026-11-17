@@ -8,6 +8,11 @@ import { normalizeRepoUrl, parseRepoUrl } from "@optio/shared";
 import type { TicketSource } from "@optio/shared";
 import { getTicketProvider } from "@optio/ticket-providers";
 import { getGitPlatformForRepo } from "../services/git-token-service.js";
+import {
+  cachedIssueList,
+  invalidateIssueListRepo,
+  issueListKey,
+} from "../services/issue-list-cache.js";
 import { retrieveSecret } from "../services/secret-service.js";
 import { logger } from "../logger.js";
 import { buildCommentsSection } from "../services/ticket-context.js";
@@ -223,7 +228,10 @@ export async function issueRoutes(rawApp: FastifyInstance) {
           }
 
           const issueState = query.state ?? "open";
-          const issues = await platform.listIssues(ri, { state: issueState, perPage: 50 });
+          const issues = await cachedIssueList(
+            issueListKey(req.user?.id, repo.repoUrl, issueState),
+            () => platform.listIssues(ri, { state: issueState, perPage: 50 }),
+          );
           const repoSource: TicketSource =
             ri.platform === "gitlab" ? ("gitlab" as TicketSource) : ("github" as TicketSource);
 
@@ -413,6 +421,7 @@ export async function issueRoutes(rawApp: FastifyInstance) {
           description: "Assigned to Optio AI agent",
         });
         await platform.addLabelsToIssue(ri, body.issueNumber, ["optio"]);
+        invalidateIssueListRepo(repo.repoUrl);
       } catch (err) {
         logger.warn({ err }, "Failed to add optio label");
       }
