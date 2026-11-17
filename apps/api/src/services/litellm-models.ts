@@ -14,9 +14,12 @@ class LitellmBlockedError extends LitellmDiscoveryError {}
 // What LiteLLM's /v1/messages adapter maps Claude Code's effort onto.
 const REASONING_EFFORTS = ["low", "medium", "high"];
 
+// LiteLLM model modes Claude Code can send messages to; a model without one is kept.
+const CHAT_MODES = new Set(["chat", "completion", "responses"]);
+
 interface ModelInfoEntry {
   model_name?: unknown;
-  model_info?: { max_input_tokens?: unknown; supports_reasoning?: unknown } | null;
+  model_info?: { max_input_tokens?: unknown; supports_reasoning?: unknown; mode?: unknown } | null;
 }
 
 async function getJson(url: string, apiKey: string, opts: OutboundOptions): Promise<unknown> {
@@ -49,8 +52,9 @@ function fromModelInfo(body: unknown): ModelProviderModel[] {
     if (typeof entry?.model_name !== "string" || !entry.model_name) continue;
     // One model name can front several deployments; the first one describes it.
     if (byId.has(entry.model_name)) continue;
-    const model: ModelProviderModel = { id: entry.model_name };
     const info = entry.model_info ?? {};
+    if (typeof info.mode === "string" && !CHAT_MODES.has(info.mode)) continue;
+    const model: ModelProviderModel = { id: entry.model_name };
     if (typeof info.max_input_tokens === "number" && info.max_input_tokens > 0) {
       model.contextWindow = Math.floor(info.max_input_tokens);
     }

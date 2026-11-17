@@ -209,6 +209,9 @@ export function isValidLitellmKeyEnv(name: string): boolean {
   return ENV_VAR_RE.test(name) && name.includes("LITELLM");
 }
 
+/** Most models an agent can list under one provider. */
+export const MAX_PROVIDER_MODELS = 50;
+
 export const DEFAULT_LITELLM_KEY_ENV = "LITELLM_API_KEY";
 
 /** An http(s) URL with no userinfo, query or fragment: a CLI appends its own paths. */

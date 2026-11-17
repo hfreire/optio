@@ -4,12 +4,17 @@ import {
   emptyProviderForm,
   formFromProvider,
   formatModels,
+  makeDefaultModel,
+  modelChoices,
   parseModels,
+  pickModels,
   podsLabel,
   toCreateInput,
   toUpdateInput,
   toggleAgent,
+  unpickModels,
   validateProviderForm,
+  withDiscoveredModels,
   withRegion,
 } from "./model-provider-form";
 
@@ -180,5 +185,72 @@ describe("LiteLLM provider form", () => {
     expect(toUpdateInput(formFromProvider(litellmSaved), litellmSaved)).not.toHaveProperty(
       "credentials",
     );
+  });
+});
+
+describe("LiteLLM model picker", () => {
+  const proxy = [
+    { id: "gpt-5", contextWindow: 272000, efforts: ["low", "medium", "high"] },
+    { id: "local-coder", contextWindow: 262144, efforts: [] },
+    { id: "qwen3.8-max", contextWindow: 131072 },
+  ];
+
+  it("lists the picked models first, in order, then the rest of the proxy's", () => {
+    const picked = [{ id: "local-coder" }, { id: "gone-model" }];
+    expect(modelChoices(picked, proxy, "")).toEqual([
+      {
+        model: { id: "local-coder", contextWindow: 262144, efforts: [] },
+        picked: true,
+        onProxy: true,
+      },
+      { model: { id: "gone-model" }, picked: true, onProxy: false },
+      { model: proxy[0], picked: false, onProxy: true },
+      { model: proxy[2], picked: false, onProxy: true },
+    ]);
+  });
+
+  it("doesn't flag picked models before the proxy was asked", () => {
+    expect(modelChoices([{ id: "local-coder" }], [], "")).toEqual([
+      { model: { id: "local-coder" }, picked: true, onProxy: null },
+    ]);
+  });
+
+  it("filters by a case-insensitive part of the id", () => {
+    expect(modelChoices([{ id: "local-coder" }], proxy, "QWEN").map((c) => c.model.id)).toEqual([
+      "qwen3.8-max",
+    ]);
+  });
+
+  it("appends picks, drops unpicks, and moves one to the front as the default", () => {
+    const picked = pickModels([{ id: "a" }], [{ id: "b" }, { id: "a" }, { id: "c" }]);
+    expect(picked.map((m) => m.id)).toEqual(["a", "b", "c"]);
+    expect(unpickModels(picked, ["b"]).map((m) => m.id)).toEqual(["a", "c"]);
+    expect(makeDefaultModel(picked, "c").map((m) => m.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("refuses more models than the API stores", () => {
+    const f = {
+      ...emptyProviderForm(true, "litellm"),
+      baseUrl: "http://litellm.ai:4000",
+      apiKey: "sk-1",
+      models: { "claude-code": Array.from({ length: 51 }, (_, i) => ({ id: `m${i}` })) },
+    };
+    expect(validateProviderForm(f, true)).toMatch(/at most 50/);
+    expect(
+      validateProviderForm(
+        { ...f, models: { "claude-code": f.models["claude-code"].slice(1) } },
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  it("refreshes the picked models' limits from a fetch without picking new ones", () => {
+    const f = {
+      ...emptyProviderForm(true, "litellm"),
+      models: { "claude-code": [{ id: "local-coder", label: "Coder" }] },
+    };
+    expect(withDiscoveredModels(f, "claude-code", proxy).models["claude-code"]).toEqual([
+      { id: "local-coder", label: "Coder", contextWindow: 262144, efforts: [] },
+    ]);
   });
 });
