@@ -46,11 +46,13 @@ import { planNewWork, workChangeError, type WorkActor } from "./work-ownership.j
  * Facts are cached per repository for `FRESH_MS` (per API instance, like
  * every cache here); a webhook for the repo drops its entry
  * (`invalidatePrInboxRepo`), and a manual refresh re-reads anything older
- * than `REFRESH_FLOOR_MS`.
+ * than `REFRESH_FLOOR_MS`. Up to `STALE_MS` old, a read is answered from the
+ * cache while the platform is re-read in the background.
  */
 
 const FRESH_MS = 60_000;
 const REFRESH_FLOOR_MS = 10_000;
+const STALE_MS = 10 * 60_000;
 const REPO_CONCURRENCY = 4;
 const MAX_PRS_PER_REPO = 100;
 
@@ -106,8 +108,21 @@ async function repoFacts(
   const hit = cache.get(key);
   const age = hit ? Date.now() - hit.at : Infinity;
   if (hit && age < (refresh ? REFRESH_FLOOR_MS : FRESH_MS)) return hit.facts;
-  const pending = inFlight.get(key);
-  if (pending) return pending;
+  const read = inFlight.get(key) ?? rereadRepoFacts(key, repo, workspaceId);
+  if (hit && !refresh && age < STALE_MS) {
+    read.catch((err) =>
+      logger.warn({ err, repoUrl: repo.repoUrl }, "pr-inbox: background refresh failed"),
+    );
+    return hit.facts;
+  }
+  return read;
+}
+
+function rereadRepoFacts(
+  key: string,
+  repo: { repoUrl: string; gitPlatform?: string | null },
+  workspaceId: string | null,
+): Promise<PrFacts[]> {
   const p = readRepoFacts(repo, workspaceId)
     .then((facts) => {
       cache.set(key, { at: Date.now(), facts });
