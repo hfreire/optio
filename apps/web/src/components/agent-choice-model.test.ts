@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import type { ModelProvider } from "@optio/shared";
 import {
   REPO_FACTORY_OPTIONS,
   agentSummary,
@@ -7,6 +8,8 @@ import {
   optionsFromRepo,
   repoAgentPatch,
   repoAgentValues,
+  repoSignInOptions,
+  withRepoProvider,
   repoHasOwnOptions,
   repoOwnRuntime,
   reviewModelField,
@@ -69,6 +72,67 @@ describe("agent-choice-model — picker keys are repo columns", () => {
     expect(patch.opencodeBaseUrl).toBeNull();
     // A field only a run on your machine takes has no column.
     expect("claudePermissionMode" in patch).toBe(false);
+  });
+
+  it("carries the repo's model provider for Claude Code, cleared when blank", () => {
+    const v = repoAgentValues({ claudeModelProviderId: "p-org", claudeModel: "us.anthropic.x" });
+    expect(v.modelProvider).toBe("p-org");
+    expect(repoAgentPatch("claude-code", v).claudeModelProviderId).toBe("p-org");
+    expect(
+      repoAgentPatch("claude-code", { ...v, modelProvider: "" }).claudeModelProviderId,
+    ).toBeNull();
+    expect(repoAgentValues({ claudeModelProviderId: null }).modelProvider).toBe("");
+    expect(repoHasOwnOptions("claude-code", repo({ claudeModelProviderId: "p-org" }))).toBe(true);
+    expect(repoHasOwnOptions("claude-code", repo({ claudeModelProviderId: null }))).toBe(false);
+  });
+
+  describe("the repo's sign-in row", () => {
+    const provider = (over: Partial<ModelProvider> = {}): ModelProvider => ({
+      id: "p-org",
+      workspaceId: "ws",
+      ownerUserId: null,
+      ownerName: null,
+      kind: "litellm",
+      name: "Gateway",
+      agents: ["claude-code"],
+      region: null,
+      models: { "claude-code": [{ id: "claude-sonnet", label: "Sonnet" }] },
+      localAwsProfile: null,
+      baseUrl: "https://llm.example.com",
+      localApiKeyEnv: null,
+      podCredential: "api-key",
+      hasPodCredentials: true,
+      mine: false,
+      canEdit: true,
+      createdAt: "",
+      updatedAt: "",
+      ...over,
+    });
+
+    it("offers the organization's Claude Code providers, machines-only ones disabled", () => {
+      const options = repoSignInOptions([
+        provider(),
+        provider({ id: "p-mine", ownerUserId: "u-me", mine: true }),
+        provider({ id: "p-codex", agents: ["codex"] }),
+        provider({ id: "p-laptop", kind: "bedrock", name: "Laptop", podCredential: "none" }),
+      ]);
+      expect(options.map((o) => [o.credential.id, o.credential.label, o.disabled])).toEqual([
+        ["provider:p-org", "LiteLLM · Gateway", undefined],
+        ["provider:p-laptop", "Amazon Bedrock · Laptop", "Machines only"],
+      ]);
+      expect(options[0].credential.providerId).toBe("p-org");
+    });
+
+    it("picking a provider takes its first model; Default goes back to the repo's model", () => {
+      const start = repoAgentValues({ claudeModel: "sonnet" });
+      const picked = withRepoProvider(start, provider());
+      expect(picked.modelProvider).toBe("p-org");
+      expect(picked.claudeModel).toBe("claude-sonnet");
+      const back = withRepoProvider(picked, null);
+      expect(back.modelProvider).toBe("");
+      expect(back.claudeModel).toBe(REPO_FACTORY_OPTIONS.claudeModel);
+      expect(withRepoProvider(start, null)).toEqual(start);
+    });
   });
 
   it("tells a configured repo from one left at the column defaults", () => {

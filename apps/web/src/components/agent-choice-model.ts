@@ -1,10 +1,13 @@
 import {
   getProviderCatalog,
+  MODEL_PROVIDER_OPTION_KEY,
   optionRunsOn,
   providerForAgentType,
   resolveModelId,
 } from "@optio/shared";
+import type { AgentCredential, ModelProvider } from "@optio/shared";
 import type { AgentOptionsValues } from "@/components/agent-options-picker";
+import { KIND_LABELS, POD_CREDENTIAL_LABELS } from "@/components/settings/model-provider-form";
 
 /**
  * The pure half of `AgentChoice`: which runtimes exist, what they're called,
@@ -63,6 +66,9 @@ export function optionsFromRepo(
     const v = repo[k];
     if (typeof v === "string" || typeof v === "boolean") out[k] = v;
   }
+  if (runtime === "claude-code" && typeof repo.claudeModelProviderId === "string") {
+    out[MODEL_PROVIDER_OPTION_KEY] = repo.claudeModelProviderId;
+  }
   return out;
 }
 
@@ -106,6 +112,7 @@ export function repoAgentValues(repo: Record<string, unknown>): AgentOptionsValu
   for (const [k, v] of Object.entries(REPO_FACTORY_OPTIONS)) {
     if (out[k] === undefined || out[k] === "") out[k] = v;
   }
+  out[MODEL_PROVIDER_OPTION_KEY] ??= "";
   return out;
 }
 
@@ -136,7 +143,50 @@ export function repoAgentPatch(
     else if (SENT_AS_IS.has(k)) patch[k] = v ?? undefined;
     else patch[k] = v || undefined;
   }
+  const provider = values[MODEL_PROVIDER_OPTION_KEY];
+  patch.claudeModelProviderId = typeof provider === "string" && provider ? provider : null;
   return patch;
+}
+
+/**
+ * The repo's "Signed in with" choices for Claude Code: the organization's
+ * providers only (private ones can't back every member's work), and a
+ * machines-only one shown but not pickable (repo work runs in pods).
+ */
+export function repoSignInOptions(
+  providers: ModelProvider[],
+): { credential: AgentCredential; disabled?: string }[] {
+  return providers
+    .filter((p) => p.ownerUserId === null && p.agents.includes("claude-code"))
+    .map((p) => ({
+      credential: {
+        id: `provider:${p.id}`,
+        kind: "provider",
+        method: p.kind,
+        label: `${KIND_LABELS[p.kind]} · ${p.name}`,
+        providerId: p.id,
+        owner: "workspace",
+        default: false,
+      },
+      disabled: p.podCredential === "none" ? POD_CREDENTIAL_LABELS.none : undefined,
+    }));
+}
+
+/** Pick (or with null, drop) the repo's provider; its model id means nothing without it. */
+export function withRepoProvider(
+  values: AgentOptionsValues,
+  p: ModelProvider | null,
+): AgentOptionsValues {
+  if (p) {
+    const first = p.models["claude-code"]?.[0]?.id;
+    return { ...values, [MODEL_PROVIDER_OPTION_KEY]: p.id, claudeModel: first ?? "" };
+  }
+  if (!values[MODEL_PROVIDER_OPTION_KEY]) return values;
+  return {
+    ...values,
+    [MODEL_PROVIDER_OPTION_KEY]: "",
+    claudeModel: REPO_FACTORY_OPTIONS.claudeModel,
+  };
 }
 
 /** Summary line for a card header: "Claude Code · opus · high". */
