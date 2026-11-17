@@ -45,7 +45,7 @@ extension WorkForm {
     static func usableProviders(_ providers: [ModelProvider], runtime: String) -> [ModelProvider] {
         guard let agent = providerAgent(runtime) else { return [] }
         return providers.filter { p in
-            p.kind == .bedrock && p.agents.contains(agent) && (p.ownerUserId == nil || p.mine)
+            (p.kind == .bedrock || p.kind == .litellm) && p.agents.contains(agent) && (p.ownerUserId == nil || p.mine)
         }
     }
 
@@ -134,11 +134,17 @@ extension WorkForm {
         return out
     }
 
+    /// "LiteLLM" / "Bedrock".
+    static func kindLabel(_ p: ModelProvider) -> String { p.kind == .litellm ? "LiteLLM" : "Bedrock" }
+
+    /// The AWS region (Bedrock) or the proxy URL (LiteLLM).
+    static func location(_ p: ModelProvider) -> String { (p.kind == .litellm ? p.baseUrl : p.region) ?? "" }
+
     /// "Pods: access key" etc. for a provider row.
     static func podCredentialLabel(_ c: ModelProviderPodCredential) -> String {
         switch c {
         case .accessKey: return "access key"
-        case .bearerToken: return "API key"
+        case .bearerToken, .apiKey: return "API key"
         case .ambient: return "IAM role"
         case .none, .unknown: return "machines only"
         }

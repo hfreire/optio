@@ -213,9 +213,9 @@ export type LocalTerminalSpec =
        */
       baseBranch?: string;
       /**
-       * Reach the models through this provider (Amazon Bedrock) instead of
-       * the CLI's own sign-in, with the machine's own AWS credentials. Only
-       * sent to daemons whose hello set `modelProviders`.
+       * Reach the models through this provider instead of the CLI's own
+       * sign-in, with the machine's own credentials. Only sent to daemons
+       * whose hello set `modelProviders`.
        */
       provider?: ModelProviderLaunch;
     };
@@ -483,6 +483,8 @@ export type LocalDaemonMessage =
       manageDirs?: boolean;
       /** The daemon runs agents through a model provider (`spec.provider`). */
       modelProviders?: boolean;
+      /** The daemon runs Claude Code through a LiteLLM provider (`spec.provider.kind: "litellm"`). */
+      litellmProviders?: boolean;
       /** AWS profile names in the machine's ~/.aws/config and credentials (names only). */
       awsProfiles?: string[];
       /** The daemon answers `limits-refresh` (reads Codex's limits on request). */

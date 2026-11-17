@@ -83,6 +83,7 @@ fun credentialMethodLabel(method: AgentCredentialMethod): String = when (method)
     AgentCredentialMethod.GITHUB_TOKEN -> "GitHub token"
     AgentCredentialMethod.VERTEX_AI -> "Vertex AI"
     AgentCredentialMethod.BEDROCK -> "Amazon Bedrock"
+    AgentCredentialMethod.LITELLM -> "LiteLLM"
     AgentCredentialMethod.UNKNOWN -> "Credential"
 }
 

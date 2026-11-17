@@ -3,12 +3,15 @@
 ## Model providers
 
 A **model provider** is a saved way for an agent CLI to reach its models other than its usual
-sign-in. Today the one kind is **Amazon Bedrock**, for Claude Code (Anthropic models) and Codex
-(OpenAI models on Bedrock, through Codex's built-in `amazon-bedrock` provider).
+sign-in. Two kinds:
 
-Pointing an agent at an OpenAI-/Anthropic-compatible endpoint (a proxy such as LiteLLM) is the
-other route: a connection's `shellEnv` exports the base-URL variables and a secret carries the
-key. See [LiteLLM proxy](litellm-proxy.md).
+- **Amazon Bedrock**, for Claude Code (Anthropic models) and Codex (OpenAI models on Bedrock,
+  through Codex's built-in `amazon-bedrock` provider);
+- **LiteLLM**, a LiteLLM proxy for Claude Code (its Anthropic-compatible `/v1/messages`). See
+  [LiteLLM providers](#litellm-providers).
+
+For the other agents (Gemini CLI, OpenCode, Codex) a proxy is reached through a connection's
+`shellEnv` and a secret instead. See [LiteLLM proxy](litellm-proxy.md).
 
 Managed in **Settings → Model providers** (`GET/POST/PATCH/DELETE /api/model-providers`,
 `services/model-provider-service.ts`, table `model_providers`). A provider has:
@@ -17,20 +20,22 @@ Managed in **Settings → Model providers** (`GET/POST/PATCH/DELETE /api/model-p
 - the **agents** it serves (`claude-code`, `codex`) and the **models** it offers each, in picker
   order (the first is the default; `bedrockDefaultModels` suggests `us.anthropic.claude-…` /
   `openai.gpt-…` ids for the region);
-- a **region**;
-- **on your machines**: an optional AWS profile name (blank = the machine's default AWS
-  credentials);
+- Bedrock: a **region**; LiteLLM: the proxy's **URL**;
+- **on your machines**: Bedrock, an optional AWS profile name (blank = the machine's default AWS
+  credentials); LiteLLM, the env var holding the machine's own key (its name must contain
+  `LITELLM`, so an org provider can't read a member's other secrets; default `LITELLM_API_KEY`,
+  and the launch stops when it's unset);
 - **in pods**: `access-key` (AWS key id + secret + optional session token), `bearer-token` (a
-  Bedrock API key), `ambient` (the pod's own IAM role, e.g. IRSA on EKS) or `none` (machines
-  only). Stored credentials are AES-256-GCM encrypted on the row (AAD `model_provider|<id>`) and
+  Bedrock API key), `ambient` (the pod's own IAM role, e.g. IRSA on EKS), `api-key` (LiteLLM: a
+  virtual key) or `none` (machines only). Stored credentials are AES-256-GCM encrypted on the row (AAD `model_provider|<id>`) and
   never returned; the API only says `hasPodCredentials`.
 
 Work picks a provider with `agentOptions.modelProvider = <id>`, and its model field
 (`claudeModel` / `copilotModel`) then holds one of the provider's model ids. The web, iOS and
 Android forms only show the **Provider** switch once a provider serves the chosen runtime.
 
-`bedrockRuntime()` in `@optio/shared` is the one mapping to the CLIs, used by both run
-locations:
+`bedrockRuntime()` in `@optio/shared` maps a Bedrock provider to the CLIs, for both run
+locations (`providerRuntime()` picks it or `litellmRuntime()` by kind):
 
 |             | Claude Code                                                                                                                                       | Codex                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -40,9 +45,34 @@ locations:
 
 Pods: the task, workflow and persistent-agent workers call `resolveProviderForWork` (which
 re-checks the owner, agent, workspace and pod credentials at run time and fails the run with a
-clear message otherwise) and `podProviderRuntime`; the agent's sign-in mode becomes `bedrock`, so
-no Anthropic / OpenAI key is required. Machines: see "Model providers" in
+clear message otherwise) and `podProviderRuntime`; the agent's sign-in mode becomes `bedrock` or
+`litellm`, so no Anthropic / OpenAI key is required. Machines: see "Model providers" in
 [optio-local.md](optio-local.md#launching-agents).
+
+### LiteLLM providers
+
+**Fetch models** in the editor calls `POST /api/model-providers/discover-models`, which asks the
+proxy's `/model/info` for each model's `max_input_tokens` (its context window) and
+`supports_reasoning` (efforts `low`/`medium`/`high`), falling back to `/v1/models` (ids only)
+when the key may not read it. The list is saved with the provider; **Refresh models** replaces it.
+The call goes through the outbound guard, so an in-cluster proxy needs its host in
+`outbound.allowedHosts`. A saved key is only sent to the URL it was saved with: changing the URL
+needs the key again. With pods set to machines only, a key typed in to fetch is not saved.
+A run drops a work's effort the picked model does not take.
+
+`litellmRuntime()` maps a run to Claude Code:
+
+| env                                                                                                             | value                                             |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `ANTHROPIC_BASE_URL`                                                                                            | the proxy URL                                     |
+| `ANTHROPIC_AUTH_TOKEN`                                                                                          | pods: the stored key; machines: `$<env var>`      |
+| `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` | the picked model, so no call asks for a Claude id |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS`                                                                                | the model's context window, when known            |
+| `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`                                                                        | `1`: proxied models reject Anthropic betas        |
+
+The context window field is replaced by the model's own: `[1m]` is only added for a model of 1M
+tokens or more. The effort field offers the model's own efforts. On a machine the launch also
+unsets `ANTHROPIC_API_KEY`, so a real Anthropic key never reaches the proxy.
 
 ## Agent credentials
 

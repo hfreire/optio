@@ -13,7 +13,7 @@ describe("buildAgentCommand with a model provider", () => {
     expect(
       buildAgentCommand("claude-code", "hi", SETTINGS, {
         model: "us.anthropic.claude-opus-5-5",
-        provider: { region: "us-west-2", awsProfile: "bedrock" },
+        provider: { kind: "bedrock", region: "us-west-2", awsProfile: "bedrock" },
       }),
     ).toBe(
       "env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_BEARER_TOKEN_BEDROCK " +
@@ -24,7 +24,7 @@ describe("buildAgentCommand with a model provider", () => {
 
   it("uses the default AWS credentials when no profile is named", () => {
     const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
-      provider: { region: "eu-west-1" },
+      provider: { kind: "bedrock", region: "eu-west-1" },
     });
     expect(cmd).toBe(
       `env AWS_REGION='eu-west-1' AWS_DEFAULT_REGION='eu-west-1' CLAUDE_CODE_USE_BEDROCK='1' ${CLAUDE}`,
@@ -35,7 +35,7 @@ describe("buildAgentCommand with a model provider", () => {
     expect(
       buildAgentCommand("codex", "go", SETTINGS, {
         model: "openai.gpt-5.4",
-        provider: { region: "us-west-2" },
+        provider: { kind: "bedrock", region: "us-west-2" },
       }),
     ).toBe(
       "env AWS_REGION='us-west-2' AWS_DEFAULT_REGION='us-west-2' " +
@@ -45,7 +45,7 @@ describe("buildAgentCommand with a model provider", () => {
       buildAgentCommand("codex", undefined, SETTINGS, {
         mode: "headless",
         resumeSessionId: "abc",
-        provider: { region: "us-west-2" },
+        provider: { kind: "bedrock", region: "us-west-2" },
       }),
     ).toContain(
       `codex exec resume --dangerously-bypass-approvals-and-sandbox -c 'model_provider="amazon-bedrock"' 'abc'`,
@@ -53,16 +53,65 @@ describe("buildAgentCommand with a model provider", () => {
   });
 
   it("ignores a provider for agents it can't serve", () => {
-    expect(buildAgentCommand("gemini", "x", SETTINGS, { provider: { region: "us-west-2" } })).toBe(
-      `gemini -i 'x'`,
-    );
+    expect(
+      buildAgentCommand("gemini", "x", SETTINGS, {
+        provider: { kind: "bedrock", region: "us-west-2" },
+      }),
+    ).toBe(`gemini -i 'x'`);
   });
 
   it("quotes a hostile region instead of running it", () => {
     const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
-      provider: { region: "x'; rm -rf / #" },
+      provider: { kind: "bedrock", region: "x'; rm -rf / #" },
     });
     expect(cmd).toContain(`AWS_REGION='x'\\''; rm -rf / #'`);
+  });
+});
+
+describe("buildAgentCommand with a LiteLLM provider", () => {
+  const litellm = {
+    kind: "litellm" as const,
+    baseUrl: "http://litellm.lan:4000",
+    apiKeyEnv: "LITELLM_API_KEY",
+    model: { id: "local-coder", contextWindow: 262144 },
+  };
+
+  it("points Claude Code at the proxy with the key from the machine's env var", () => {
+    expect(
+      buildAgentCommand("claude-code", "hi", SETTINGS, { model: "local-coder", provider: litellm }),
+    ).toBe(
+      'env -u ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?set LITELLM_API_KEY to the LiteLLM key}" ' +
+        "ANTHROPIC_BASE_URL='http://litellm.lan:4000' CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS='1' " +
+        "ANTHROPIC_DEFAULT_OPUS_MODEL='local-coder' ANTHROPIC_DEFAULT_SONNET_MODEL='local-coder' " +
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL='local-coder' ANTHROPIC_DEFAULT_FABLE_MODEL='local-coder' " +
+        "ANTHROPIC_SMALL_FAST_MODEL='local-coder' CLAUDE_CODE_SUBAGENT_MODEL='local-coder' " +
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS='262144' " +
+        `${CLAUDE} --model 'local-coder' 'hi'`,
+    );
+  });
+
+  it("reads LITELLM_API_KEY when no variable is named, and stops when it's unset", () => {
+    const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
+      provider: { kind: "litellm", baseUrl: "http://litellm.lan:4000" },
+    });
+    expect(cmd).toContain('ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?');
+  });
+
+  it("never expands a variable that isn't a LiteLLM key", () => {
+    for (const apiKeyEnv of ["X; rm -rf /", "GITHUB_TOKEN"]) {
+      const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
+        provider: { ...litellm, apiKeyEnv },
+      });
+      expect(cmd).not.toContain("rm -rf");
+      expect(cmd).not.toContain("GITHUB_TOKEN");
+      expect(cmd).toContain('ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?');
+    }
+  });
+
+  it("ignores a LiteLLM provider for Codex", () => {
+    expect(buildAgentCommand("codex", "x", SETTINGS, { provider: litellm })).toBe(
+      `codex --dangerously-bypass-approvals-and-sandbox 'x'`,
+    );
   });
 });
 

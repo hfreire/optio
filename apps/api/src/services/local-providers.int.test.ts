@@ -29,7 +29,7 @@ class FakeDaemonSocket implements relay.RelaySocket {
 
 const DIRS = [{ path: "/home/dev/scratch" }];
 
-async function machine(caps: { modelProviders?: boolean }) {
+async function machine(caps: { modelProviders?: boolean; litellmProviders?: boolean }) {
   const host = await registerHost({
     userId: null,
     workspaceId: null,
@@ -97,6 +97,33 @@ describe("model providers on a machine", () => {
     });
     expect(terminal.state).toBe("error");
     expect(terminal.errorMessage).toMatch(/can't use model providers yet/);
+    expect(daemon.spawns()).toHaveLength(0);
+  });
+
+  it("refuses a LiteLLM provider on a daemon that only knows Bedrock", async () => {
+    const { host, daemon } = await machine({ modelProviders: true });
+    const p = await createModelProvider(
+      {
+        name: "LiteLLM",
+        owner: "workspace",
+        kind: "litellm",
+        agents: ["claude-code"],
+        baseUrl: "http://litellm.lan:4000",
+        podCredential: "none",
+        models: { "claude-code": [{ id: "local-coder" }] },
+      },
+      { userId: null, workspaceId: null, isAdmin: true },
+    );
+    const terminal = await createTerminal({
+      host,
+      userId: null,
+      workspaceId: null,
+      dir: "/home/dev/scratch",
+      spec: { kind: "agent", agent: "claude-code", model: "local-coder" },
+      modelProviderId: p.id,
+    });
+    expect(terminal.state).toBe("error");
+    expect(terminal.errorMessage).toMatch(/can't use LiteLLM providers yet/);
     expect(daemon.spawns()).toHaveLength(0);
   });
 

@@ -8,6 +8,7 @@ import {
   optionChoicesFor,
   optionRunsOn,
   type AgentProviderId,
+  type ModelOption,
   type ModelProviderModel,
   type ProviderCatalog,
 } from "@optio/shared";
@@ -48,13 +49,15 @@ interface Props {
    */
   latestAliases?: boolean;
   /**
-   * A model provider (Bedrock) is picked: its models replace the model
-   * dropdown's choices (free text when it lists none). Everything else stays.
+   * A model provider is picked: its models replace the model dropdown's
+   * choices (free text when it lists none). A model's own efforts and context
+   * window, when the provider reported them, replace those fields' choices.
    */
   providerModels?: ModelProviderModel[];
 }
 
 const DEFAULT_INPUT_CLASS = standardInputClass();
+const CONTEXT_WINDOW_KEY = "claudeContextWindow";
 
 interface LiveState {
   catalog: ProviderCatalog;
@@ -164,17 +167,33 @@ export function AgentOptionsPicker({
   const unlisted =
     !!modelValue && !(latestAliases && isAlias) && !catalog.models.some((m) => m.id === modelValue);
 
-  const selectedModel = catalog.models.find((m) => m.id === modelValue);
+  // A proxy's model carries its own efforts and context window when the
+  // provider reported them; the catalog's choices stand in otherwise.
+  const providerModel = providerModels?.find((m) => m.id === rawModel);
+  const selectedModel: ModelOption | undefined = providerModels
+    ? providerModel?.efforts
+      ? {
+          id: providerModel.id,
+          label: providerModel.label ?? providerModel.id,
+          efforts: providerModel.efforts,
+        }
+      : undefined
+    : catalog.models.find((m) => m.id === modelValue);
+  const fixedContext = providerModel?.contextWindow;
   // Fields this run takes: all of them in a pod; on a machine, only what the
   // daemon hands the agent CLI.
-  const fields = modelOnly ? [] : catalog.options.filter((f) => optionRunsOn(f, runsOn));
+  const fields = modelOnly
+    ? []
+    : catalog.options.filter(
+        (f) => optionRunsOn(f, runsOn) && !(fixedContext && f.key === CONTEXT_WINDOW_KEY),
+      );
 
   const setField = (key: string, value: string | boolean) => {
     const next = { ...values, [key]: value };
     if (key === catalog.modelField) {
       // A reasoning effort the newly picked model doesn't take goes back to
       // its default rather than riding along into a run it would fail.
-      const model = catalog.models.find((m) => m.id === value);
+      const model = (providerModels ?? catalog.models).find((m) => m.id === value);
       for (const f of catalog.options) {
         const v = next[f.key];
         if (f.modelEfforts && model?.efforts && typeof v === "string" && v) {
@@ -296,6 +315,11 @@ export function AgentOptionsPicker({
             <p className="text-[11px] text-text-muted mt-1">
               &ldquo;Always the latest&rdquo; moves to each new release on its own; a specific
               version stays put.
+            </p>
+          )}
+          {fixedContext && !modelOnly && (
+            <p className="text-[11px] text-text-muted mt-1">
+              Context: {Math.round(fixedContext / 1000)}K tokens, from the provider
             </p>
           )}
           {live?.liveFrom && !providerModels && (

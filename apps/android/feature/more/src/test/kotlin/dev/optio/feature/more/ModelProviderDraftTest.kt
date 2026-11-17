@@ -44,6 +44,17 @@ class ModelProviderDraftTest {
     )
 
     @Test
+    fun litellmSummaryShowsTheBaseUrl() {
+        val litellm = stored.copy(
+            kind = ModelProviderKind.LITELLM,
+            region = null,
+            baseUrl = "http://litellm.ai:4000",
+            podCredential = ModelProviderPodCredential.API_KEY,
+        )
+        assertEquals("LiteLLM · Organization · Claude Code · http://litellm.ai:4000 · Pods: API key (stored)", providerSummary(litellm))
+    }
+
+    @Test
     fun modelsTextRoundTrips() {
         val models = listOf(ModelProviderModel("a", "A"), ModelProviderModel("b"))
         assertEquals("a | A\nb", modelsText(models))

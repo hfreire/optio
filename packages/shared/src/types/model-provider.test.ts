@@ -4,10 +4,20 @@ import {
   bedrockInferencePrefix,
   bedrockRuntime,
   canManageOrgResources,
+  findProviderModel,
   isModelProviderAgent,
+  isStoredPodCredential,
   isValidAwsProfileName,
   isValidAwsRegion,
+  isValidLitellmKeyEnv,
+  isValidProviderBaseUrl,
+  litellmRuntime,
   modelProviderIdFrom,
+  modelProviderKindAgents,
+  modelProviderKindPodCredentials,
+  normalizeProviderBaseUrl,
+  providerModelContextWindow,
+  providerRuntime,
 } from "./model-provider.js";
 import { secretCredentialId, secretIdFromCredential } from "./agent-credential.js";
 
@@ -149,5 +159,114 @@ describe("Bedrock runtime credentials", () => {
     expect(
       bedrockDefaultModels("codex", "us-west-2").every((model) => model.id.startsWith("openai.")),
     ).toBe(true);
+  });
+});
+
+describe("litellm model providers", () => {
+  it("takes a stored API key or nothing for pods, unlike Bedrock", () => {
+    expect(modelProviderKindPodCredentials("litellm")).toEqual(["api-key", "none"]);
+    expect(modelProviderKindPodCredentials("bedrock")).toEqual([
+      "access-key",
+      "bearer-token",
+      "ambient",
+      "none",
+    ]);
+    expect(isStoredPodCredential("api-key")).toBe(true);
+    expect(isStoredPodCredential("ambient")).toBe(false);
+    expect(isStoredPodCredential("none")).toBe(false);
+  });
+
+  it("finds the picked model only among the agent's models", () => {
+    const models = { "claude-code": [{ id: "local-coder" }] };
+    expect(findProviderModel(models, "claude-code", "local-coder")).toEqual({ id: "local-coder" });
+    expect(findProviderModel(models, "codex", "local-coder")).toBeUndefined();
+    expect(findProviderModel(models, "claude-code", null)).toBeUndefined();
+    expect(findProviderModel(null, "claude-code", "local-coder")).toBeUndefined();
+  });
+
+  const launch = { baseUrl: "http://litellm.ai:4000" };
+  const credentials = { type: "api-key", apiKey: "sk-optio" } as const;
+
+  it("serves Claude Code only", () => {
+    expect(modelProviderKindAgents("litellm")).toEqual(["claude-code"]);
+    expect(modelProviderKindAgents("bedrock")).toEqual(["claude-code", "codex"]);
+  });
+
+  it("points Claude Code at the proxy with the stored key", () => {
+    const { env, codexConfig } = litellmRuntime(launch, credentials);
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://litellm.ai:4000");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-optio");
+    expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
+    expect(codexConfig).toEqual([]);
+  });
+
+  it("sends Claude Code's internal model calls to the picked model", () => {
+    const { env } = litellmRuntime(launch, credentials, {
+      id: "local-coder",
+      contextWindow: 262144,
+    });
+    for (const name of [
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+    ])
+      expect(env[name]).toBe("local-coder");
+    expect(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe("262144");
+  });
+
+  it("leaves the key to the machine when none is stored", () => {
+    expect(litellmRuntime(launch).env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it("dispatches on the provider kind", () => {
+    expect(
+      providerRuntime("claude-code", { kind: "litellm", ...launch }, credentials).env
+        .ANTHROPIC_BASE_URL,
+    ).toBe("http://litellm.ai:4000");
+    expect(
+      providerRuntime("claude-code", { kind: "bedrock", region: "us-west-2" }).env
+        .CLAUDE_CODE_USE_BEDROCK,
+    ).toBe("1");
+  });
+
+  it.each(["http://litellm.ai:4000", "https://litellm.k8s1.se.home", "http://10.0.0.1:4000/"])(
+    "accepts base URL %s",
+    (url) => {
+      expect(isValidProviderBaseUrl(url)).toBe(true);
+    },
+  );
+  it.each([
+    "",
+    "litellm.ai:4000",
+    "ftp://litellm",
+    "http://user:pass@litellm",
+    "http://litellm/?x=1",
+    "http://litellm/#a",
+    "javascript:alert(1)",
+  ])("rejects base URL %s", (url) => {
+    expect(isValidProviderBaseUrl(url)).toBe(false);
+  });
+
+  it("drops a trailing slash so the CLI appends its own paths cleanly", () => {
+    expect(normalizeProviderBaseUrl(" http://litellm.ai:4000/ ")).toBe("http://litellm.ai:4000");
+  });
+
+  it.each(["LITELLM_API_KEY", "MY_LITELLM_KEY"])("accepts key env var %s", (n) => {
+    expect(isValidLitellmKeyEnv(n)).toBe(true);
+  });
+  it.each(["", "1LITELLM", "litellm_key", "LITELLM-B", "GITHUB_TOKEN", "$(LITELLM)"])(
+    "rejects key env var %s",
+    (n) => {
+      expect(isValidLitellmKeyEnv(n)).toBe(false);
+    },
+  );
+
+  it("only narrows the context window for a 1M-capable model", () => {
+    expect(providerModelContextWindow({ id: "a", contextWindow: 262144 })).toBe("200k");
+    expect(providerModelContextWindow({ id: "a", contextWindow: 1_000_000 })).toBe("1m");
+    expect(providerModelContextWindow({ id: "a" })).toBe("200k");
   });
 });

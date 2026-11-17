@@ -512,7 +512,7 @@ final class WorkFormState {
     var summaryWho: String {
         if isTerminal { return isCommand ? "Command" : "Terminal" }
         let m = modelLabel
-        return F.runtimeLabel(draft.runtime) + (m.isEmpty ? "" : " · \(m)") + (pickedProvider == nil ? "" : " · Bedrock")
+        return F.runtimeLabel(draft.runtime) + (m.isEmpty ? "" : " · \(m)") + (pickedProvider.map { " · \(F.kindLabel($0))" } ?? "")
     }
     var summaryThen: String {
         switch draft.then {

@@ -30,6 +30,7 @@ import type {
   CreateModelProviderInput,
   LocalTranscriptEntry,
   ModelProvider,
+  ModelProviderModel,
   PickableSecret,
   RemoteWorkspaceProviderId,
   ResourceOwner,
@@ -494,6 +495,18 @@ export const api = {
   updateModelProvider: (id: string, data: UpdateModelProviderInput) =>
     request<{ provider: ModelProvider }>(`/api/model-providers/${id}`, {
       method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  /** A LiteLLM proxy's models; no `apiKey` = the saved provider's stored key. */
+  discoverModelProviderModels: (data: {
+    kind: "litellm";
+    baseUrl: string;
+    apiKey?: string;
+    providerId?: string;
+  }) =>
+    request<{ models: ModelProviderModel[] }>("/api/model-providers/discover-models", {
+      method: "POST",
       body: JSON.stringify(data),
     }),
 
