@@ -2392,6 +2392,8 @@ sealed interface LocalDaemonMessage {
         val manageDirs: Boolean? = null,
         /** The daemon runs agents through a model provider (`spec.provider`). */
         val modelProviders: Boolean? = null,
+        /** The daemon runs Claude Code through a LiteLLM provider (`spec.provider.kind: "litellm"`). */
+        val litellmProviders: Boolean? = null,
         /** AWS profile names in the machine's ~/.aws/config and credentials (names only). */
         val awsProfiles: List<String>? = null,
         /** The daemon answers `limits-refresh` (reads Codex's limits on request). */

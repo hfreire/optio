@@ -4836,6 +4836,8 @@ public enum LocalDaemonMessage: Codable, Hashable, Sendable {
         public let manageDirs: Bool?
         /// The daemon runs agents through a model provider (`spec.provider`).
         public let modelProviders: Bool?
+        /// The daemon runs Claude Code through a LiteLLM provider (`spec.provider.kind: "litellm"`).
+        public let litellmProviders: Bool?
         /// AWS profile names in the machine's ~/.aws/config and credentials (names only).
         public let awsProfiles: [String]?
         /// The daemon answers `limits-refresh` (reads Codex's limits on request).
@@ -4854,6 +4856,7 @@ public enum LocalDaemonMessage: Codable, Hashable, Sendable {
             case transcriptBackfill = "transcriptBackfill"
             case manageDirs = "manageDirs"
             case modelProviders = "modelProviders"
+            case litellmProviders = "litellmProviders"
             case awsProfiles = "awsProfiles"
             case refreshLimits = "refreshLimits"
             case answersQueries = "answersQueries"
@@ -4868,6 +4871,7 @@ public enum LocalDaemonMessage: Codable, Hashable, Sendable {
             transcriptBackfill: Bool? = nil,
             manageDirs: Bool? = nil,
             modelProviders: Bool? = nil,
+            litellmProviders: Bool? = nil,
             awsProfiles: [String]? = nil,
             refreshLimits: Bool? = nil,
             answersQueries: Bool? = nil
@@ -4880,6 +4884,7 @@ public enum LocalDaemonMessage: Codable, Hashable, Sendable {
             self.transcriptBackfill = transcriptBackfill
             self.manageDirs = manageDirs
             self.modelProviders = modelProviders
+            self.litellmProviders = litellmProviders
             self.awsProfiles = awsProfiles
             self.refreshLimits = refreshLimits
             self.answersQueries = answersQueries

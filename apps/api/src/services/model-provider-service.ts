@@ -277,7 +277,7 @@ function sealCredentials(id: string, credentials: ModelProviderCredentials) {
   };
 }
 
-export function openCredentials(row: ModelProviderRow): ModelProviderCredentials | null {
+function openCredentials(row: ModelProviderRow): ModelProviderCredentials | null {
   if (!row.encryptedCredentials || !row.credentialsIv || !row.credentialsAuthTag) return null;
   const json = decrypt(
     {
