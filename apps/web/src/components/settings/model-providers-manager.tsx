@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Cloud, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Cloud, Loader2, Pencil, Plus, RefreshCw, Star, Trash2 } from "lucide-react";
 import {
+  MAX_PROVIDER_MODELS,
   MODEL_PROVIDER_AGENTS,
   MODEL_PROVIDER_KINDS,
   modelProviderKindAgents,
@@ -26,6 +27,7 @@ import { EmptyState } from "@/components/empty-state";
 import { SkeletonCard } from "./settings-ui";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/input";
+import { SearchField } from "@/components/ui/search-field";
 import {
   AGENT_LABELS,
   KIND_LABELS,
@@ -33,11 +35,15 @@ import {
   emptyProviderForm,
   formFromProvider,
   formatModels,
+  makeDefaultModel,
+  modelChoices,
   parseModels,
+  pickModels,
   podsLabel,
   toCreateInput,
   toUpdateInput,
   toggleAgent,
+  unpickModels,
   validateProviderForm,
   withDiscoveredModels,
   withRegion,
@@ -242,6 +248,8 @@ function ProviderEditor({
   const [knownModels, setKnownModels] = useState<ModelProviderModel[]>(() =>
     Object.values(form.models).flatMap((m) => m ?? []),
   );
+  // What the proxy listed on the last fetch; empty until fetched.
+  const [proxyModels, setProxyModels] = useState<ModelProviderModel[]>([]);
   const set = (patch: Partial<ProviderForm>) => setForm((f) => ({ ...f, ...patch }));
   const syncText = (f: ProviderForm) =>
     setModelText(
@@ -257,6 +265,7 @@ function ProviderEditor({
 
   const switchKind = (kind: ProviderForm["kind"]) => {
     const next = { ...emptyProviderForm(isAdmin, kind), owner: form.owner };
+    setProxyModels([]);
     setForm(next);
     syncText(next);
   };
@@ -272,6 +281,7 @@ function ProviderEditor({
       });
       const next = withDiscoveredModels(form, "claude-code", models);
       setKnownModels((k) => [...k, ...models]);
+      setProxyModels(models);
       setForm(next);
       syncText(next);
       toast.success(`${models.length} model${models.length === 1 ? "" : "s"} found`);
@@ -377,7 +387,9 @@ function ProviderEditor({
             <label className={LABEL}>
               {AGENT_LABELS[a]} models{" "}
               <span className="text-text-muted/60">
-                (one per line, “id | label”; first is the default)
+                {litellm
+                  ? "(the first is the default)"
+                  : "(one per line, “id | label”; first is the default)"}
               </span>
             </label>
             {litellm && (
@@ -402,22 +414,31 @@ function ProviderEditor({
               className={cn(INPUT, "mb-2")}
             />
           )}
-          <textarea
-            rows={Math.max(2, (modelText[a] ?? "").split("\n").length)}
-            value={modelText[a] ?? ""}
-            onChange={(e) => {
-              setModelText((t) => ({ ...t, [a]: e.target.value }));
-              setForm((f) => ({
-                ...f,
-                models: {
-                  ...f.models,
-                  [a]: parseModels(e.target.value, [...knownModels, ...(f.models[a] ?? [])]),
-                },
-              }));
-            }}
-            className={cn(INPUT, "font-mono text-xs resize-y")}
-          />
-          {litellm && <ModelLimits models={form.models[a]} />}
+          {litellm ? (
+            <ModelPicker
+              picked={form.models[a] ?? []}
+              available={proxyModels}
+              onChange={(models) =>
+                setForm((f) => ({ ...f, models: { ...f.models, [a]: models } }))
+              }
+            />
+          ) : (
+            <textarea
+              rows={Math.max(2, (modelText[a] ?? "").split("\n").length)}
+              value={modelText[a] ?? ""}
+              onChange={(e) => {
+                setModelText((t) => ({ ...t, [a]: e.target.value }));
+                setForm((f) => ({
+                  ...f,
+                  models: {
+                    ...f.models,
+                    [a]: parseModels(e.target.value, [...knownModels, ...(f.models[a] ?? [])]),
+                  },
+                }));
+              }}
+              className={cn(INPUT, "font-mono text-xs resize-y")}
+            />
+          )}
         </div>
       ))}
 
@@ -581,19 +602,163 @@ function ProviderEditor({
   );
 }
 
-/** What the proxy reported per model, which the textarea doesn't show. */
-function ModelLimits({ models }: { models: ModelProviderModel[] | undefined }) {
-  const known = (models ?? []).filter((m) => m.contextWindow || m.efforts?.length);
-  if (!known.length) return null;
+function modelLimits(m: ModelProviderModel): string {
+  return [
+    m.contextWindow ? `${Math.round(m.contextWindow / 1000)}k context` : "",
+    m.efforts?.length ? `effort ${m.efforts.join("/")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Checkbox list of the proxy's models; the picked ones are saved, the first as the default. */
+function ModelPicker({
+  picked,
+  available,
+  onChange,
+}: {
+  picked: ModelProviderModel[];
+  available: ModelProviderModel[];
+  onChange: (models: ModelProviderModel[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [manual, setManual] = useState("");
+  const choices = modelChoices(picked, available, query);
+  const unpickedVisible = choices.filter((c) => !c.picked).map((c) => c.model);
+  const addManual = () => {
+    const id = manual.trim();
+    if (!id) return;
+    onChange(pickModels(picked, [{ id }]));
+    setManual("");
+  };
+
   return (
-    <ul className="mt-1.5 space-y-0.5 text-[11px] text-text-muted">
-      {known.map((m) => (
-        <li key={m.id}>
-          <span className="font-mono">{m.id}</span>
-          {m.contextWindow ? ` · ${Math.round(m.contextWindow / 1000)}k context` : ""}
-          {m.efforts?.length ? ` · effort ${m.efforts.join("/")}` : ""}
-        </li>
-      ))}
-    </ul>
+    <div className="rounded-md border border-border">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+        <SearchField
+          size="sm"
+          label="Search models"
+          value={query}
+          onChange={setQuery}
+          className="min-w-0 flex-1"
+        />
+        <span
+          className={cn(
+            "text-xs",
+            picked.length > MAX_PROVIDER_MODELS ? "text-error" : "text-text-muted",
+          )}
+        >
+          {picked.length} of {Math.max(available.length, picked.length)} offered
+        </span>
+        {unpickedVisible.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange(pickModels(picked, unpickedVisible))}
+            className="text-xs text-primary hover:underline"
+          >
+            {query.trim() ? "Select shown" : "Select all"}
+          </button>
+        )}
+        {picked.length > 0 && (
+          <button
+            type="button"
+            onClick={() =>
+              onChange(
+                query.trim()
+                  ? unpickModels(
+                      picked,
+                      choices.filter((c) => c.picked).map((c) => c.model.id),
+                    )
+                  : [],
+              )
+            }
+            className="text-xs text-primary hover:underline"
+          >
+            {query.trim() ? "Clear shown" : "Clear"}
+          </button>
+        )}
+      </div>
+      <ul className="max-h-64 overflow-y-auto py-1">
+        {choices.length === 0 && (
+          <li className="px-3 py-2 text-xs text-text-muted">
+            {available.length || picked.length
+              ? "No model matches."
+              : "Fetch the models, or add an id below."}
+          </li>
+        )}
+        {choices.map(({ model, picked: on, onProxy }) => {
+          const isDefault = on && picked[0]?.id === model.id;
+          const limits = modelLimits(model);
+          return (
+            <li
+              key={model.id}
+              className="group flex items-center gap-2 px-3 py-1 hover:bg-bg-hover"
+            >
+              <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={(e) =>
+                    onChange(
+                      e.target.checked
+                        ? pickModels(picked, [model])
+                        : unpickModels(picked, [model.id]),
+                    )
+                  }
+                  className="h-4 w-4 shrink-0 rounded"
+                />
+                <span className="truncate font-mono text-xs">{model.id}</span>
+                {limits && (
+                  <span className="hidden shrink-0 text-[11px] text-text-muted sm:inline">
+                    {limits}
+                  </span>
+                )}
+                {onProxy === false && (
+                  <span className="shrink-0 text-[11px] text-warning">not on the proxy</span>
+                )}
+              </label>
+              {isDefault ? (
+                <span className="shrink-0 text-[11px] text-primary">default</span>
+              ) : (
+                on && (
+                  <button
+                    type="button"
+                    title="Make it the default"
+                    aria-label={`Make ${model.id} the default`}
+                    onClick={() => onChange(makeDefaultModel(picked, model.id))}
+                    className="shrink-0 text-text-muted opacity-0 hover:text-primary focus:opacity-100 group-hover:opacity-100"
+                  >
+                    <Star className="h-3.5 w-3.5" />
+                  </button>
+                )
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <div className="flex gap-2 border-t border-border p-2">
+        <input
+          value={manual}
+          onChange={(e) => setManual(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addManual();
+            }
+          }}
+          placeholder="Add a model id"
+          className={cn(INPUT, "font-mono text-xs")}
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={addManual}
+          disabled={!manual.trim()}
+        >
+          Add
+        </Button>
+      </div>
+    </div>
   );
 }

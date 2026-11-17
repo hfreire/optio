@@ -5,6 +5,7 @@ import {
   MODEL_PROVIDER_AGENTS,
   MODEL_PROVIDER_KINDS,
   MODEL_PROVIDER_POD_CREDENTIALS,
+  MAX_PROVIDER_MODELS,
 } from "@optio/shared";
 import { requireRole } from "../plugins/auth.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
@@ -29,8 +30,8 @@ const modelSchema = z.object({
 
 const modelsSchema = z
   .object({
-    "claude-code": z.array(modelSchema).max(50).optional(),
-    codex: z.array(modelSchema).max(50).optional(),
+    "claude-code": z.array(modelSchema).max(MAX_PROVIDER_MODELS).optional(),
+    codex: z.array(modelSchema).max(MAX_PROVIDER_MODELS).optional(),
   })
   .describe("Models offered per agent, in picker order (first = default)");
 

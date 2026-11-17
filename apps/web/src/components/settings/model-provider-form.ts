@@ -5,6 +5,7 @@ import {
   isStoredPodCredential,
   isValidLitellmKeyEnv,
   isValidProviderBaseUrl,
+  MAX_PROVIDER_MODELS,
   modelProviderKindAgents,
   normalizeProviderBaseUrl,
   type CreateModelProviderInput,
@@ -189,13 +190,75 @@ export function parseModels(
     .filter((m) => m.id);
 }
 
-/** Replace an agent's model list with what the proxy reported. */
+/** Refresh the picked models' context windows and efforts from what the proxy reported. */
 export function withDiscoveredModels(
   f: ProviderForm,
   agent: ModelProviderAgent,
-  models: ModelProviderModel[],
+  discovered: ModelProviderModel[],
 ): ProviderForm {
+  const byId = new Map(discovered.map((m) => [m.id, m]));
+  const models = (f.models[agent] ?? []).map((m) => {
+    const d = byId.get(m.id);
+    return d ? { ...d, ...(m.label ? { label: m.label } : {}) } : m;
+  });
   return { ...f, models: { ...f.models, [agent]: models } };
+}
+
+export interface ModelChoice {
+  model: ModelProviderModel;
+  picked: boolean;
+  /** Whether the proxy lists it; null until the proxy was asked. */
+  onProxy: boolean | null;
+}
+
+/** Picked models first, in their order (the first is the default), then the proxy's other models. */
+export function modelChoices(
+  picked: ModelProviderModel[],
+  available: ModelProviderModel[],
+  query: string,
+): ModelChoice[] {
+  const byId = new Map(available.map((m) => [m.id, m]));
+  const pickedIds = new Set(picked.map((m) => m.id));
+  const asked = available.length > 0;
+  const choices: ModelChoice[] = [
+    ...picked.map((m) => {
+      const d = byId.get(m.id);
+      return {
+        model: d ? { ...d, ...(m.label ? { label: m.label } : {}) } : m,
+        picked: true,
+        onProxy: asked ? !!d : null,
+      };
+    }),
+    ...available
+      .filter((m) => !pickedIds.has(m.id))
+      .map((m) => ({ model: m, picked: false, onProxy: true })),
+  ];
+  const q = query.trim().toLowerCase();
+  return q ? choices.filter((c) => c.model.id.toLowerCase().includes(q)) : choices;
+}
+
+export function pickModels(
+  picked: ModelProviderModel[],
+  more: ModelProviderModel[],
+): ModelProviderModel[] {
+  const ids = new Set(picked.map((m) => m.id));
+  const added: ModelProviderModel[] = [];
+  for (const m of more) {
+    if (ids.has(m.id)) continue;
+    ids.add(m.id);
+    added.push(m);
+  }
+  return [...picked, ...added];
+}
+
+export function unpickModels(picked: ModelProviderModel[], ids: string[]): ModelProviderModel[] {
+  const drop = new Set(ids);
+  return picked.filter((m) => !drop.has(m.id));
+}
+
+export function makeDefaultModel(picked: ModelProviderModel[], id: string): ModelProviderModel[] {
+  const m = picked.find((p) => p.id === id);
+  return m ? [m, ...picked.filter((p) => p.id !== id)] : picked;
 }
 
 export function formatModels(models: ModelProviderModel[] | undefined): string {
@@ -206,6 +269,8 @@ export function formatModels(models: ModelProviderModel[] | undefined): string {
 export function validateProviderForm(f: ProviderForm, creating: boolean): string | null {
   if (!f.name.trim()) return "Give it a name.";
   if (f.agents.length === 0) return "Pick at least one agent.";
+  const tooMany = f.agents.find((a) => (f.models[a]?.length ?? 0) > MAX_PROVIDER_MODELS);
+  if (tooMany) return `Offer at most ${MAX_PROVIDER_MODELS} models per agent.`;
   if (f.kind === "litellm") {
     if (!isValidProviderBaseUrl(normalizeProviderBaseUrl(f.baseUrl))) {
       return "The URL looks like http://litellm:4000.";

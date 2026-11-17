@@ -45,6 +45,30 @@ describe("discoverLitellmModels", () => {
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer sk-1");
   });
 
+  it("leaves out models Claude Code can't talk to", async () => {
+    const fetchImpl = fetchReturning({
+      "/model/info": {
+        status: 200,
+        body: {
+          data: [
+            { model_name: "chatty", model_info: { mode: "chat" } },
+            { model_name: "responder", model_info: { mode: "responses" } },
+            { model_name: "unknown-mode", model_info: {} },
+            { model_name: "text-embedding-3-small", model_info: { mode: "embedding" } },
+            { model_name: "dall-e", model_info: { mode: "image_generation" } },
+            { model_name: "whisper", model_info: { mode: "audio_transcription" } },
+            { model_name: "reranker", model_info: { mode: "rerank" } },
+          ],
+        },
+      },
+    });
+    const models = await discoverLitellmModels("http://litellm.example:4000", "sk-1", {
+      fetchImpl,
+      resolveHost,
+    });
+    expect(models.map((m) => m.id)).toEqual(["chatty", "responder", "unknown-mode"]);
+  });
+
   it("falls back to the OpenAI model list when /model/info is refused", async () => {
     const fetchImpl = fetchReturning({
       "/model/info": { status: 403, body: { error: "admin only" } },
