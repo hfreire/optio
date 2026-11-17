@@ -402,6 +402,7 @@ export const repos = pgTable(
     defaultBranch: text("default_branch").notNull().default("main"),
     isPrivate: boolean("is_private").notNull().default(false),
     imagePreset: text("image_preset").default("base"),
+    customImage: text("custom_image"), // overrides imagePreset; deployment-admin only
     extraPackages: text("extra_packages"), // comma-separated
     setupCommands: text("setup_commands"), // shell commands run at pod startup after clone
     customDockerfile: text("custom_dockerfile"), // full Dockerfile override (advanced)

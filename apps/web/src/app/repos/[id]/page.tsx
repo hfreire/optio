@@ -5,6 +5,7 @@ import { FORM_WIDTH } from "@/components/ui/page";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/input";
 import { usePageTitle } from "@/hooks/use-page-title";
+import { useCurrentUser } from "@/hooks/use-current-user";
 import { api } from "@/lib/api-client";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -74,6 +75,7 @@ const EXTERNAL_REVIEW_MODES: Array<{
 export default function RepoDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { isDeploymentAdmin } = useCurrentUser();
   const [repo, setRepo] = useState<any>(null);
   usePageTitle(repo?.fullName ?? "Repository");
   const [loading, setLoading] = useState(true);
@@ -81,6 +83,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
 
   // Editable fields
   const [imagePreset, setImagePreset] = useState("base");
+  const [customImage, setCustomImage] = useState("");
   const [extraPackages, setExtraPackages] = useState("");
   const [setupCommands, setSetupCommands] = useState("");
   const [customDockerfile, setCustomDockerfile] = useState("");
@@ -162,6 +165,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
         const r = res.repo;
         setRepo(r);
         setImagePreset(r.imagePreset ?? "base");
+        setCustomImage(r.customImage ?? "");
         setExtraPackages(r.extraPackages ?? "");
         setSetupCommands(r.setupCommands ?? "");
         setCustomDockerfile(r.customDockerfile ?? "");
@@ -251,6 +255,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
     try {
       await api.updateRepo(id, {
         imagePreset,
+        ...(isDeploymentAdmin ? { customImage } : {}),
         extraPackages: extraPackages || undefined,
         setupCommands: setupCommands || undefined,
         customDockerfile: customDockerfile || null,
@@ -1487,7 +1492,9 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
             summary={
               customDockerfile
                 ? "custom Dockerfile"
-                : (PRESET_IMAGES[imagePreset as PresetImageId]?.label ?? imagePreset)
+                : customImage
+                  ? customImage
+                  : (PRESET_IMAGES[imagePreset as PresetImageId]?.label ?? imagePreset)
             }
             bodyClassName="p-4 space-y-3"
           >
@@ -1522,6 +1529,20 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
                   </div>
                 </button>
               ))}
+            </div>
+            <div>
+              <label className="block text-xs text-text-muted mb-1">Custom image</label>
+              <input
+                value={customImage}
+                onChange={(e) => setCustomImage(e.target.value)}
+                disabled={!isDeploymentAdmin}
+                placeholder="registry.example.com/optio-agent-custom:v1@sha256:..."
+                className={inputClass({ className: "font-mono text-xs" })}
+              />
+              <p className="text-[10px] text-text-muted/60 mt-1">
+                Overrides the preset above. Build it FROM the base agent image.
+                {isDeploymentAdmin ? "" : " Only a deployment admin can change this."}
+              </p>
             </div>
             <div>
               <label className="block text-xs text-text-muted mb-1">
