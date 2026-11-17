@@ -85,6 +85,8 @@ export interface HostCapabilities {
   manageDirs: boolean;
   /** It runs agents through a model provider (`spec.provider`). */
   modelProviders: boolean;
+  /** It runs Claude Code through a LiteLLM provider (`spec.provider.kind: "litellm"`). */
+  litellmProviders: boolean;
   /** It refreshes agent limits on request (`limits-refresh`). */
   refreshLimits: boolean;
   /** It answers its terminals' queries itself (`answersQueries`). */
@@ -96,6 +98,7 @@ const CAPABILITY_KEYS: Array<keyof HostCapabilities> = [
   "transcriptBackfill",
   "manageDirs",
   "modelProviders",
+  "litellmProviders",
   "refreshLimits",
   "answersQueries",
 ];
@@ -501,6 +504,8 @@ const can = (cap: keyof HostCapabilities) => async (hostId: string) =>
 export const hostCanBackfillTranscripts = can("transcriptBackfill");
 /** Whether the host's connected daemon runs agents through a model provider (false when offline). */
 export const hostCanUseModelProviders = can("modelProviders");
+/** Whether the host's connected daemon runs Claude Code through a LiteLLM provider (false when offline). */
+export const hostCanUseLitellmProviders = can("litellmProviders");
 /** Whether the host's connected daemon answers its terminals' queries itself (false when offline). */
 export const hostAnswersQueries = can("answersQueries");
 

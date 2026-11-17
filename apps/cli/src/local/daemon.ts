@@ -576,6 +576,7 @@ export async function runDaemon(opts: {
           transcriptBackfill: true,
           manageDirs: remoteDirs,
           modelProviders: true,
+          litellmProviders: true,
           refreshLimits: true,
           answersQueries: true,
           awsProfiles: listAwsProfiles(),

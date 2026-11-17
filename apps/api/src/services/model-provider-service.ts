@@ -7,7 +7,7 @@ import {
   isStoredPodCredential,
   isValidAwsProfileName,
   isValidAwsRegion,
-  isValidEnvVarName,
+  isValidLitellmKeyEnv,
   isValidProviderBaseUrl,
   modelProviderIdFrom,
   modelProviderKindAgents,
@@ -240,8 +240,10 @@ function normalizeFields(
   }
   if (input.localApiKeyEnv !== undefined && kind === "litellm") {
     const name = input.localApiKeyEnv?.trim() || null;
-    if (name && !isValidEnvVarName(name)) {
-      throw new ModelProviderError(`"${name}" isn't an environment variable name`);
+    if (name && !isValidLitellmKeyEnv(name)) {
+      throw new ModelProviderError(
+        `"${name}" isn't an environment variable name with LITELLM in it (like LITELLM_API_KEY)`,
+      );
     }
     out.localApiKeyEnv = name;
   }
@@ -406,6 +408,13 @@ export async function updateModelProvider(
     Object.assign(updates, sealCredentials(row.id, input.credentials));
   } else if (fields.podCredential !== undefined && fields.podCredential !== row.podCredential) {
     throw new ModelProviderError("Add the pod credentials for the new sign-in method");
+  } else if (
+    fields.baseUrl !== undefined &&
+    fields.baseUrl !== row.baseUrl &&
+    row.encryptedCredentials
+  ) {
+    // The stored key only ever goes where it was entered for.
+    throw new ModelProviderError("Enter the key again for the new URL");
   }
   const [saved] = await db
     .update(modelProviders)
@@ -565,6 +574,17 @@ export interface PodProviderRuntime {
   authMode: ModelProviderKind;
   /** Overrides the work's Claude context window: a proxy model only gets `[1m]` when it takes 1M. */
   claudeContextWindow?: "200k" | "1m";
+  /** The efforts the picked proxy model takes, when the proxy said. */
+  claudeEfforts?: string[];
+}
+
+/** The work's Claude effort, unless the picked provider model doesn't take it. */
+export function providerClaudeEffort(
+  runtime: PodProviderRuntime | null | undefined,
+  effort: string | undefined,
+): string | undefined {
+  if (!effort || !runtime?.claudeEfforts) return effort;
+  return runtime.claudeEfforts.includes(effort) ? effort : undefined;
 }
 
 /** The env + Codex overrides a pod run gets for the provider, credentials included. */
@@ -582,5 +602,6 @@ export function podProviderRuntime(
     ...runtime,
     authMode: row.kind,
     claudeContextWindow: providerModelContextWindow(launch.model ?? { id: "" }),
+    ...(launch.model?.efforts ? { claudeEfforts: launch.model.efforts } : {}),
   };
 }

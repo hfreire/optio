@@ -80,7 +80,7 @@ describe("buildAgentCommand with a LiteLLM provider", () => {
     expect(
       buildAgentCommand("claude-code", "hi", SETTINGS, { model: "local-coder", provider: litellm }),
     ).toBe(
-      'env -u ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN="$LITELLM_API_KEY" ' +
+      'env -u ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?set LITELLM_API_KEY to the LiteLLM key}" ' +
         "ANTHROPIC_BASE_URL='http://litellm.lan:4000' CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS='1' " +
         "ANTHROPIC_DEFAULT_OPUS_MODEL='local-coder' ANTHROPIC_DEFAULT_SONNET_MODEL='local-coder' " +
         "ANTHROPIC_DEFAULT_HAIKU_MODEL='local-coder' ANTHROPIC_DEFAULT_FABLE_MODEL='local-coder' " +
@@ -90,22 +90,22 @@ describe("buildAgentCommand with a LiteLLM provider", () => {
     );
   });
 
-  it("leaves the token to the machine's own env when no variable is named", () => {
+  it("reads LITELLM_API_KEY when no variable is named, and stops when it's unset", () => {
     const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
       provider: { kind: "litellm", baseUrl: "http://litellm.lan:4000" },
     });
-    expect(cmd).toBe(
-      "env -u ANTHROPIC_API_KEY ANTHROPIC_BASE_URL='http://litellm.lan:4000' " +
-        `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS='1' ${CLAUDE}`,
-    );
+    expect(cmd).toContain('ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?');
   });
 
-  it("never expands a variable name that isn't one", () => {
-    const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
-      provider: { ...litellm, apiKeyEnv: "X; rm -rf /" },
-    });
-    expect(cmd).not.toContain("rm -rf");
-    expect(cmd).not.toContain("ANTHROPIC_AUTH_TOKEN");
+  it("never expands a variable that isn't a LiteLLM key", () => {
+    for (const apiKeyEnv of ["X; rm -rf /", "GITHUB_TOKEN"]) {
+      const cmd = buildAgentCommand("claude-code", undefined, SETTINGS, {
+        provider: { ...litellm, apiKeyEnv },
+      });
+      expect(cmd).not.toContain("rm -rf");
+      expect(cmd).not.toContain("GITHUB_TOKEN");
+      expect(cmd).toContain('ANTHROPIC_AUTH_TOKEN="${LITELLM_API_KEY:?');
+    }
   });
 
   it("ignores a LiteLLM provider for Codex", () => {

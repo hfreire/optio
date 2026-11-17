@@ -34,7 +34,11 @@ async function getJson(url: string, apiKey: string, opts: OutboundOptions): Prom
   }
   if (response.status === 401) throw new LitellmDiscoveryError("LiteLLM refused the key");
   if (!response.ok) throw new LitellmDiscoveryError(`${url} answered ${response.status}`);
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    throw new LitellmDiscoveryError(`${url} didn't answer with JSON`);
+  }
 }
 
 function fromModelInfo(body: unknown): ModelProviderModel[] {

@@ -540,7 +540,7 @@ struct WhoSection: View {
             lines.append("\(disabled.map { name($0.value) }.joined(separator: ", ")) — \(why).")
         }
         if let p = state.pickedProvider {
-            lines.append("Reaches the models through \(p.name) (Amazon Bedrock, \(p.region)) instead of \(state.isLocal ? "the CLI's own sign-in" : "the server's agent credentials").")
+            lines.append("Reaches the models through \(p.name) (\(p.kind == .litellm ? "LiteLLM" : "Amazon Bedrock"), \(F.location(p))) instead of \(state.isLocal ? "the CLI's own sign-in" : "the server's agent credentials").")
         } else if let c = state.pickedCredential, c.kind == .secret {
             lines.append("Signs in with \(c.label)\(c.owner == .me ? " (yours)" : " (the organization's)").")
         } else if let note = AgentOptionsPickerView.footnote(state.catalogs.state(state.provider)) { lines.append(note) }
@@ -579,7 +579,7 @@ private struct ProviderRow: View {
                 ForEach(opts, id: \.provider.id) { o in
                     MenuChoice(
                         title: o.provider.name,
-                        subtitle: o.disabled ?? "Bedrock · \(o.provider.region)\(F.isPersonal(o.provider) ? " · Private" : "")",
+                        subtitle: o.disabled ?? "\(F.kindLabel(o.provider)) · \(F.location(o.provider))\(F.isPersonal(o.provider) ? " · Private" : "")",
                         selected: o.provider.id == pickedId
                     ) { state.setProvider(o.provider) }
                     .disabled(o.disabled != nil)

@@ -133,9 +133,9 @@ data class ModelProviderDraft(
             name = p.name,
             owner = if (p.ownerUserId == null) ResourceOwner.WORKSPACE else ResourceOwner.ME,
             agents = p.agents.filter { it in PROVIDER_AGENTS }.toSet(),
-            region = p.region,
+            region = p.region ?: DEFAULT_REGION,
             models = PROVIDER_AGENTS.associateWith { agent ->
-                if (agent in p.agents) modelsText(p.modelsFor(agent.raw)) else modelsText(bedrockDefaultModels(agent, p.region))
+                if (agent in p.agents) modelsText(p.modelsFor(agent.raw)) else modelsText(bedrockDefaultModels(agent, p.region ?: DEFAULT_REGION))
             },
             localAwsProfile = p.localAwsProfile.orEmpty(),
             podCredential = p.podCredential.takeIf { it != ModelProviderPodCredential.UNKNOWN } ?: ModelProviderPodCredential.NONE,

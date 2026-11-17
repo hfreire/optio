@@ -421,6 +421,17 @@ async function trySpawn(
       endedAt: new Date(),
     });
   }
+  if (
+    spawnSpec.kind === "agent" &&
+    spawnSpec.provider?.kind === "litellm" &&
+    !(await relay.hostCanUseLitellmProviders(row.hostId))
+  ) {
+    return transitionTerminal(row.id, ["pending"], {
+      state: "error",
+      errorMessage: `Optio Local on this machine can't use LiteLLM providers yet — update it and restart \`optio local up\` to run through ${spawnSpec.provider.name}`,
+      endedAt: new Date(),
+    });
+  }
   const claimed =
     waitsForSlot(row) && !opts.now
       ? await claimAgentSlot(row)

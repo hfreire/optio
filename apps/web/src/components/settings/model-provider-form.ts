@@ -2,7 +2,8 @@ import {
   bedrockDefaultModels,
   isValidAwsProfileName,
   isValidAwsRegion,
-  isValidEnvVarName,
+  isStoredPodCredential,
+  isValidLitellmKeyEnv,
   isValidProviderBaseUrl,
   modelProviderKindAgents,
   normalizeProviderBaseUrl,
@@ -166,7 +167,10 @@ export function parseModels(
   text: string,
   previous: ModelProviderModel[] = [],
 ): ModelProviderModel[] {
-  const known = new Map(previous.map((m) => [m.id, m]));
+  const known = new Map<string, ModelProviderModel>();
+  for (const m of previous) {
+    if (!known.has(m.id) || m.contextWindow || m.efforts) known.set(m.id, m);
+  }
   return text
     .split("\n")
     .map((line) => line.trim())
@@ -206,8 +210,8 @@ export function validateProviderForm(f: ProviderForm, creating: boolean): string
     if (!isValidProviderBaseUrl(normalizeProviderBaseUrl(f.baseUrl))) {
       return "The URL looks like http://litellm:4000.";
     }
-    if (f.localApiKeyEnv.trim() && !isValidEnvVarName(f.localApiKeyEnv.trim())) {
-      return "The env var name looks like LITELLM_API_KEY.";
+    if (f.localApiKeyEnv.trim() && !isValidLitellmKeyEnv(f.localApiKeyEnv.trim())) {
+      return "The env var name has LITELLM in it, like LITELLM_API_KEY.";
     }
     if (f.podCredential === "api-key" && (creating || f.credentialAction === "replace")) {
       if (!f.apiKey.trim()) return "Enter the LiteLLM key, or make it machines only.";
@@ -218,7 +222,7 @@ export function validateProviderForm(f: ProviderForm, creating: boolean): string
   if (f.localAwsProfile.trim() && !isValidAwsProfileName(f.localAwsProfile.trim())) {
     return "That isn't a valid AWS profile name.";
   }
-  const stores = storesCredential(f.podCredential);
+  const stores = isStoredPodCredential(f.podCredential);
   if (stores && (creating || f.credentialAction === "replace")) {
     if (f.podCredential === "access-key" && (!f.accessKeyId.trim() || !f.secretAccessKey.trim())) {
       return "Enter the access key id and secret, or pick another pod sign-in.";
@@ -230,13 +234,8 @@ export function validateProviderForm(f: ProviderForm, creating: boolean): string
   return null;
 }
 
-/** Whether the pod sign-in is a secret Optio stores. */
-export function storesCredential(c: ModelProviderPodCredential): boolean {
-  return c === "access-key" || c === "bearer-token" || c === "api-key";
-}
-
 function credentialsFrom(f: ProviderForm): ModelProviderCredentials | null | undefined {
-  if (!storesCredential(f.podCredential) || f.credentialAction === "clear") return null;
+  if (!isStoredPodCredential(f.podCredential) || f.credentialAction === "clear") return null;
   if (f.credentialAction === "keep") return undefined;
   if (f.podCredential === "api-key") return { type: "api-key", apiKey: f.apiKey.trim() };
   if (f.podCredential === "access-key") {

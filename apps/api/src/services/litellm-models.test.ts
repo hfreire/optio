@@ -67,6 +67,13 @@ describe("discoverLitellmModels", () => {
     ).rejects.toThrow(/refused the key/);
   });
 
+  it("reports a proxy that doesn't answer JSON as a discovery error", async () => {
+    const fetchImpl = vi.fn(async () => new Response("<html>", { status: 200 }));
+    await expect(
+      discoverLitellmModels("http://litellm.example:4000", "sk-1", { fetchImpl, resolveHost }),
+    ).rejects.toThrow(LitellmDiscoveryError);
+  });
+
   it("refuses private addresses the outbound policy doesn't allow", async () => {
     const fetchImpl = fetchReturning({});
     await expect(

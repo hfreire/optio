@@ -22,7 +22,9 @@ Managed in **Settings → Model providers** (`GET/POST/PATCH/DELETE /api/model-p
   `openai.gpt-…` ids for the region);
 - Bedrock: a **region**; LiteLLM: the proxy's **URL**;
 - **on your machines**: Bedrock, an optional AWS profile name (blank = the machine's default AWS
-  credentials); LiteLLM, the name of the env var holding the machine's own key;
+  credentials); LiteLLM, the env var holding the machine's own key (its name must contain
+  `LITELLM`, so an org provider can't read a member's other secrets; default `LITELLM_API_KEY`,
+  and the launch stops when it's unset);
 - **in pods**: `access-key` (AWS key id + secret + optional session token), `bearer-token` (a
   Bedrock API key), `ambient` (the pod's own IAM role, e.g. IRSA on EKS), `api-key` (LiteLLM: a
   virtual key) or `none` (machines only). Stored credentials are AES-256-GCM encrypted on the row (AAD `model_provider|<id>`) and
@@ -32,8 +34,8 @@ Work picks a provider with `agentOptions.modelProvider = <id>`, and its model fi
 (`claudeModel` / `copilotModel`) then holds one of the provider's model ids. The web, iOS and
 Android forms only show the **Provider** switch once a provider serves the chosen runtime.
 
-`bedrockRuntime()` in `@optio/shared` is the one mapping to the CLIs, used by both run
-locations:
+`bedrockRuntime()` in `@optio/shared` maps a Bedrock provider to the CLIs, for both run
+locations (`providerRuntime()` picks it or `litellmRuntime()` by kind):
 
 |             | Claude Code                                                                                                                                       | Codex                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
@@ -54,7 +56,9 @@ proxy's `/model/info` for each model's `max_input_tokens` (its context window) a
 `supports_reasoning` (efforts `low`/`medium`/`high`), falling back to `/v1/models` (ids only)
 when the key may not read it. The list is saved with the provider; **Refresh models** replaces it.
 The call goes through the outbound guard, so an in-cluster proxy needs its host in
-`outbound.allowedHosts`. A saved key is only sent to the URL it was saved with.
+`outbound.allowedHosts`. A saved key is only sent to the URL it was saved with: changing the URL
+needs the key again. With pods set to machines only, a key typed in to fetch is not saved.
+A run drops a work's effort the picked model does not take.
 
 `litellmRuntime()` maps a run to Claude Code:
 

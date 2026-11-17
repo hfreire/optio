@@ -5,7 +5,8 @@ import {
   type LocalAgentPermissionMode,
   type LocalAgentSessionMode,
   type ModelProviderLaunch,
-  isValidEnvVarName,
+  DEFAULT_LITELLM_KEY_ENV,
+  isValidLitellmKeyEnv,
   modelProviderKindAgents,
   providerRuntime,
 } from "@optio/shared";
@@ -90,17 +91,21 @@ export function buildAgentCommand(
 
 /**
  * The key is read from the machine's own env var at launch (the server never
- * sends it), and an exported ANTHROPIC_API_KEY is dropped so a real Anthropic
- * key never reaches the proxy.
+ * sends it). An exported ANTHROPIC_API_KEY is dropped, and an unset key var
+ * stops the launch, so Claude Code never falls back to sending its own
+ * Anthropic sign-in to the proxy.
  */
 function withLitellmEnv(
   env: Record<string, string>,
   apiKeyEnv: string | undefined,
   command: string,
 ): string {
-  const token =
-    apiKeyEnv && isValidEnvVarName(apiKeyEnv) ? ` ANTHROPIC_AUTH_TOKEN="$${apiKeyEnv}"` : "";
-  return withProviderEnv(env, false, command).replace(/^env /, `env -u ANTHROPIC_API_KEY${token} `);
+  const name = apiKeyEnv && isValidLitellmKeyEnv(apiKeyEnv) ? apiKeyEnv : DEFAULT_LITELLM_KEY_ENV;
+  const token = `ANTHROPIC_AUTH_TOKEN="\${${name}:?set ${name} to the LiteLLM key}"`;
+  return withProviderEnv(env, false, command).replace(
+    /^env /,
+    `env -u ANTHROPIC_API_KEY ${token} `,
+  );
 }
 
 /**

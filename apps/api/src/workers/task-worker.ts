@@ -48,7 +48,11 @@ import {
   retrieveSecretWithFallback,
 } from "../services/secret-service.js";
 import { getPromptTemplate } from "../services/prompt-template-service.js";
-import { podProviderRuntime, resolveProviderForWork } from "../services/model-provider-service.js";
+import {
+  podProviderRuntime,
+  providerClaudeEffort,
+  resolveProviderForWork,
+} from "../services/model-provider-service.js";
 import * as podPool from "../services/agent-pod-pool.js";
 import { getRuntime } from "../services/container-service.js";
 import {
@@ -528,7 +532,7 @@ export function startTaskWorker() {
           taskFilePath: finalTaskFilePath,
           claudeModel: finalClaudeModel,
           claudeContextWindow: providerRuntime?.claudeContextWindow ?? opt("claudeContextWindow"),
-          claudeEffort: opt("claudeEffort"),
+          claudeEffort: providerClaudeEffort(providerRuntime, opt("claudeEffort")),
           copilotModel: copilotOpt("copilotModel"),
           copilotEffort: copilotOpt("copilotEffort"),
           opencodeModel: opt("opencodeModel") ?? opencodeDefaultModel,

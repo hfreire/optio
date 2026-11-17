@@ -31,10 +31,10 @@ struct ModelProvidersView: View {
                 ErrorRow(error: loadError) { Task { await load() } }
             } else if providers.isEmpty {
                 EmptyState(title: "No model providers", systemImage: "cloud",
-                           message: "Add Amazon Bedrock to run Claude Code or Codex through your AWS account.")
+                           message: "Add Amazon Bedrock to run Claude Code or Codex through your AWS account. LiteLLM providers are set up in the web app.")
             } else {
                 ScopedSections(groups: groups, id: \.id, what: "model providers", footer: footer) { p, scope in
-                    Button { if p.canEdit { editing = .existing(p) } } label: { row(p, scope) }
+                    Button { if p.canEdit && p.kind != .litellm { editing = .existing(p) } } label: { row(p, scope) }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing) {
                             if p.canEdit {
@@ -94,7 +94,7 @@ struct ModelProvidersView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: Spacing.s) {
                 Text(p.name).font(.body.weight(.medium))
-                Text("Bedrock").font(.caption2.weight(.semibold))
+                Text(F.kindLabel(p)).font(.caption2.weight(.semibold))
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(.fill.tertiary, in: Capsule())
                 Spacer()
@@ -103,8 +103,11 @@ struct ModelProvidersView: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            Text("\(p.agents.filter { $0 != .unknown }.map(F.agentLabel).joined(separator: ", ")) · \(p.region) · Pods: \(F.podCredentialLabel(p.podCredential))")
+            Text("\(p.agents.filter { $0 != .unknown }.map(F.agentLabel).joined(separator: ", ")) · \(F.location(p)) · Pods: \(F.podCredentialLabel(p.podCredential))")
                 .font(.footnote).foregroundStyle(.secondary)
+            if p.canEdit && p.kind == .litellm {
+                Text("Edit in the web app").font(.footnote).foregroundStyle(.secondary)
+            }
         }
         .contentShape(Rectangle())
     }
@@ -291,7 +294,7 @@ private struct ModelProviderEditor: View {
         name = p.name
         owner = p.ownerUserId == nil ? .workspace : .me
         agents = Set(p.agents.filter { $0 != .unknown })
-        region = p.region
+        region = p.region ?? region
         for a in allAgents { models[a] = F.providerModels(p, agent: a).map { ModelDraft(modelId: $0.id, label: $0.label ?? "") } }
         awsProfile = p.localAwsProfile ?? ""
         podCredential = p.podCredential == .unknown ? .none : p.podCredential

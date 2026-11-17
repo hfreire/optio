@@ -7,7 +7,7 @@ import {
   isModelProviderAgent,
   isValidAwsProfileName,
   isValidAwsRegion,
-  isValidEnvVarName,
+  isValidLitellmKeyEnv,
   isValidProviderBaseUrl,
   litellmRuntime,
   modelProviderIdFrom,
@@ -230,12 +230,15 @@ describe("litellm model providers", () => {
     expect(normalizeProviderBaseUrl(" http://litellm.ai:4000/ ")).toBe("http://litellm.ai:4000");
   });
 
-  it.each(["LITELLM_API_KEY", "_KEY1"])("accepts env var name %s", (n) => {
-    expect(isValidEnvVarName(n)).toBe(true);
+  it.each(["LITELLM_API_KEY", "MY_LITELLM_KEY"])("accepts key env var %s", (n) => {
+    expect(isValidLitellmKeyEnv(n)).toBe(true);
   });
-  it.each(["", "1KEY", "key", "A-B", "A B", "$(id)"])("rejects env var name %s", (n) => {
-    expect(isValidEnvVarName(n)).toBe(false);
-  });
+  it.each(["", "1LITELLM", "litellm_key", "LITELLM-B", "GITHUB_TOKEN", "$(LITELLM)"])(
+    "rejects key env var %s",
+    (n) => {
+      expect(isValidLitellmKeyEnv(n)).toBe(false);
+    },
+  );
 
   it("only narrows the context window for a 1M-capable model", () => {
     expect(providerModelContextWindow({ id: "a", contextWindow: 262144 })).toBe("200k");
