@@ -20,6 +20,7 @@ import {
   AGENT_TYPES,
 } from "@optio/shared";
 import { modelBelongsToAgent } from "../services/agent-options-service.js";
+import { repoModelProviderError } from "../services/model-provider-service.js";
 import { requireRole } from "../plugins/auth.js";
 import { getGitHubToken } from "../services/github-token-service.js";
 import { browseGitHubRepos } from "../services/github-repo-browse-service.js";
@@ -70,6 +71,15 @@ const updateRepoSchema = z
       .optional()
       .describe("Deprecated and ignored: Claude Code always thinks (its default)"),
     claudeEffort: z.string().optional(),
+    claudeModelProviderId: z
+      .string()
+      .uuid()
+      .nullable()
+      .optional()
+      .describe(
+        "The organization model provider Claude Code signs in through by default. " +
+          "Null = the agent's usual sign-in. A run's own sign-in wins.",
+      ),
     copilotModel: z.string().optional(),
     copilotEffort: z.string().optional(),
     opencodeModel: z.string().optional(),
@@ -649,6 +659,14 @@ export async function repoRoutes(rawApp: FastifyInstance) {
             error: `Review model "${incomingReviewModel}" does not belong to the "${incomingReviewAgent}" catalog.`,
           });
         }
+      }
+
+      if (body.claudeModelProviderId) {
+        const error = await repoModelProviderError(
+          body.claudeModelProviderId,
+          existing.workspaceId,
+        );
+        if (error) return reply.status(400).send({ error });
       }
 
       const repo = await repoService.updateRepo(id, body);

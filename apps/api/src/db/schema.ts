@@ -413,6 +413,9 @@ export const repos = pgTable(
     claudeContextWindow: text("claude_context_window").default("1m"), // "200k" or "1m"
     claudeThinking: boolean("claude_thinking").notNull().default(true),
     claudeEffort: text("claude_effort").default("high"), // "low", "medium", "high"
+    claudeModelProviderId: uuid("claude_model_provider_id").references(() => modelProviders.id, {
+      onDelete: "set null",
+    }),
     copilotModel: text("copilot_model"), // null = use copilot default
     copilotEffort: text("copilot_effort"), // "low", "medium", "high"
     opencodeModel: text("opencode_model"), // e.g. "anthropic/claude-sonnet-4", null = OpenCode default

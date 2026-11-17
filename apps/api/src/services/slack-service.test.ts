@@ -62,6 +62,7 @@ function makeRepoConfig(overrides: Partial<RepoRecord> = {}): RepoRecord {
     claudeContextWindow: "1m",
     claudeThinking: true,
     claudeEffort: "high",
+    claudeModelProviderId: null,
     copilotModel: null,
     copilotEffort: null,
     opencodeModel: null,

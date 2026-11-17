@@ -27,6 +27,7 @@ import {
   shellQuote,
   describeError,
   stripNul,
+  withRepoModelProvider,
 } from "@optio/shared";
 import {
   getAdapter,
@@ -480,10 +481,11 @@ export function startTaskWorker() {
         const finalTaskFilePath = reviewOverride?.taskFilePath ?? taskFilePath;
         // Per-run agent options (the New session form's Who parameters) win
         // over the repo's defaults; anything unset falls through as before.
-        const agentOptions = ((task.metadata as any)?.agentOptions ?? {}) as Record<
-          string,
-          string | boolean | undefined
-        >;
+        const agentOptions = withRepoModelProvider(
+          task.agentType,
+          (task.metadata as any)?.agentOptions ?? {},
+          repoConfig?.claudeModelProviderId,
+        ) as Record<string, string | boolean | undefined>;
         const runOpt = (key: string): string | undefined => {
           const v = agentOptions[key];
           return typeof v === "string" && v !== "" ? v : undefined;
