@@ -50,6 +50,7 @@ function makeRepoConfig(overrides: Partial<RepoRecord> = {}): RepoRecord {
     defaultBranch: "main",
     isPrivate: false,
     imagePreset: "node",
+    customImage: null,
     extraPackages: null,
     setupCommands: null,
     customDockerfile: null,

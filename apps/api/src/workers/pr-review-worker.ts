@@ -25,7 +25,7 @@ import {
   parseRepoUrl,
   PrReviewRunState,
   PrReviewState,
-  type PresetImageId,
+  repoImageConfig,
   describeError,
   PR_REVIEW_OUTPUT_PATH,
   sanitizeJson,
@@ -458,9 +458,7 @@ export function startPrReviewWorker() {
 
         const maxAgentsPerPod = repoConfig.maxAgentsPerPod ?? 2;
         const maxPodInstances = repoConfig.maxPodInstances ?? 1;
-        const imageConfig = repoConfig
-          ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
-          : undefined;
+        const imageConfig = repoConfig ? repoImageConfig(repoConfig) : undefined;
         const pod = await repoPool.getOrCreateRepoPod(
           review.repoUrl,
           repoConfig.defaultBranch,

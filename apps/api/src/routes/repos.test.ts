@@ -52,6 +52,13 @@ vi.mock("../services/git-token-service.js", () => ({
   getGitPlatformForRepo: (...args: unknown[]) => mockGetGitPlatformForRepo(...args),
 }));
 
+const mockIsDeploymentAdmin = vi.fn().mockResolvedValue(true);
+vi.mock("../services/sign-in-config-service.js", () => ({
+  isDeploymentAdmin: (...args: unknown[]) => mockIsDeploymentAdmin(...args),
+  hasDeploymentAdmin: vi.fn().mockResolvedValue(true),
+  isFoundingWorkspaceAdmin: vi.fn().mockResolvedValue(false),
+}));
+
 import { repoRoutes } from "./repos.js";
 
 // ─── Helpers ───
@@ -349,6 +356,54 @@ describe("PATCH /api/repos/:id", () => {
       "repo-1",
       expect.objectContaining({ imagePreset: "node" }),
     );
+  });
+
+  describe("customImage", () => {
+    const patch = (payload: Record<string, unknown>) =>
+      app.inject({ method: "PATCH", url: "/api/repos/repo-1", payload });
+
+    beforeEach(() => {
+      mockIsDeploymentAdmin.mockResolvedValue(true);
+      mockGetRepo.mockResolvedValue(mockRepoData);
+      mockUpdateRepo.mockResolvedValue({ ...mockRepoData });
+    });
+
+    it("stores a trimmed image reference", async () => {
+      const res = await patch({ customImage: "  zot.local/agent-esp:v1  " });
+      expect(res.statusCode).toBe(200);
+      expect(mockUpdateRepo).toHaveBeenCalledWith(
+        "repo-1",
+        expect.objectContaining({ customImage: "zot.local/agent-esp:v1" }),
+      );
+    });
+
+    it("turns an empty string into null", async () => {
+      const res = await patch({ customImage: "   " });
+      expect(res.statusCode).toBe(200);
+      expect(mockUpdateRepo).toHaveBeenCalledWith(
+        "repo-1",
+        expect.objectContaining({ customImage: null }),
+      );
+    });
+
+    it("rejects a malformed reference", async () => {
+      const res = await patch({ customImage: "not an image" });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateRepo).not.toHaveBeenCalled();
+    });
+
+    it("refuses a caller who is not a deployment admin", async () => {
+      mockIsDeploymentAdmin.mockResolvedValue(false);
+      const res = await patch({ customImage: "zot.local/agent-esp:v1" });
+      expect(res.statusCode).toBe(403);
+      expect(mockUpdateRepo).not.toHaveBeenCalled();
+    });
+
+    it("lets a non-deployment-admin change other settings", async () => {
+      mockIsDeploymentAdmin.mockResolvedValue(false);
+      const res = await patch({ imagePreset: "node" });
+      expect(res.statusCode).toBe(200);
+    });
   });
 
   it("returns 404 for nonexistent repo", async () => {
