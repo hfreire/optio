@@ -73,7 +73,10 @@ there is no button, ask an Optio admin.
 
 **Inbox** (in the sidebar) lists the issues of your connected repositories
 and ticket providers. **Assign to Optio** starts a task from one; **Assign
-all to Optio** takes every unassigned one.
+all to Optio** takes every unassigned one. A repository's issues are read at
+most every 30 seconds; older than that, the list you see is answered from
+cache and refreshed in the background, and an issue webhook or an assignment
+drops it at once.
 
 ## Follow a run
 

@@ -408,11 +408,13 @@ export async function ticketRoutes(rawApp: FastifyInstance) {
       const rawPayload = req.body;
       const payload = rawPayload as Record<string, Record<string, unknown> | string | undefined>;
       {
-        // Anything about a repo may change its PRs' state in the PR panel.
+        // Anything about a repo may change its PRs in the PR panel or its issues in the Inbox.
         const repoUrl = (payload.repository as Record<string, unknown> | undefined)?.html_url;
         if (typeof repoUrl === "string") {
           const { invalidatePrInboxRepo } = await import("../services/pr-inbox-cache.js");
           invalidatePrInboxRepo(repoUrl);
+          const { invalidateIssueListRepo } = await import("../services/issue-list-cache.js");
+          invalidateIssueListRepo(repoUrl);
         }
       }
       if (typeof event === "string") {
