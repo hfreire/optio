@@ -18,6 +18,7 @@ import {
   normalizeProviderBaseUrl,
   providerModelContextWindow,
   providerRuntime,
+  withRepoModelProvider,
 } from "./model-provider.js";
 import { secretCredentialId, secretIdFromCredential } from "./agent-credential.js";
 
@@ -268,5 +269,34 @@ describe("litellm model providers", () => {
     expect(providerModelContextWindow({ id: "a", contextWindow: 262144 })).toBe("200k");
     expect(providerModelContextWindow({ id: "a", contextWindow: 1_000_000 })).toBe("1m");
     expect(providerModelContextWindow({ id: "a" })).toBe("200k");
+  });
+});
+
+describe("a repo's default model provider", () => {
+  const repoProvider = "11111111-1111-1111-1111-111111111111";
+
+  it("signs a Claude Code run with no sign-in or model of its own in through the repo's provider", () => {
+    expect(withRepoModelProvider("claude-code", { claudeEffort: "low" }, repoProvider)).toEqual({
+      claudeEffort: "low",
+      modelProvider: repoProvider,
+    });
+    expect(withRepoModelProvider("claude-code", {}, repoProvider)).toEqual({
+      modelProvider: repoProvider,
+    });
+  });
+
+  it("leaves a run's own provider, credential or model alone", () => {
+    const own = { modelProvider: "22222222-2222-2222-2222-222222222222" };
+    expect(withRepoModelProvider("claude-code", own, repoProvider)).toBe(own);
+    const key = { credential: secretCredentialId("s1") };
+    expect(withRepoModelProvider("claude-code", key, repoProvider)).toBe(key);
+    const model = { claudeModel: "opus" };
+    expect(withRepoModelProvider("claude-code", model, repoProvider)).toBe(model);
+  });
+
+  it("only applies to Claude Code, and only when the repo has one", () => {
+    expect(withRepoModelProvider("codex", {}, repoProvider)).toEqual({});
+    expect(withRepoModelProvider("claude-code", {}, null)).toEqual({});
+    expect(withRepoModelProvider("claude-code", {}, undefined)).toEqual({});
   });
 });

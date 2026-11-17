@@ -17,6 +17,7 @@
  */
 
 import type { WorkspaceRole } from "./workspace.js";
+import { AGENT_CREDENTIAL_OPTION_KEY } from "./agent-credential.js";
 
 export const MODEL_PROVIDER_KINDS = ["bedrock", "litellm"] as const;
 export type ModelProviderKind = (typeof MODEL_PROVIDER_KINDS)[number];
@@ -186,6 +187,27 @@ export function modelProviderIdFrom(
 ): string | undefined {
   const v = agentOptions?.[MODEL_PROVIDER_OPTION_KEY];
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+/**
+ * A run's agent options with the repo's default model provider filled in. It
+ * applies only to a Claude Code run with no sign-in and no model of its own:
+ * the repo's model is a provider model id, meaningless without its provider.
+ */
+export function withRepoModelProvider(
+  agentType: string,
+  agentOptions: Record<string, unknown>,
+  repoProviderId: string | null | undefined,
+): Record<string, unknown> {
+  if (agentType !== "claude-code" || !repoProviderId) return agentOptions;
+  const own = (key: string) => {
+    const v = agentOptions[key];
+    return typeof v === "string" && v.trim() !== "";
+  };
+  if (own(MODEL_PROVIDER_OPTION_KEY) || own(AGENT_CREDENTIAL_OPTION_KEY) || own("claudeModel")) {
+    return agentOptions;
+  }
+  return { ...agentOptions, [MODEL_PROVIDER_OPTION_KEY]: repoProviderId };
 }
 
 const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d+$/;
