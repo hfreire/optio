@@ -4,7 +4,9 @@ import {
   bedrockInferencePrefix,
   bedrockRuntime,
   canManageOrgResources,
+  findProviderModel,
   isModelProviderAgent,
+  isStoredPodCredential,
   isValidAwsProfileName,
   isValidAwsRegion,
   isValidLitellmKeyEnv,
@@ -12,6 +14,7 @@ import {
   litellmRuntime,
   modelProviderIdFrom,
   modelProviderKindAgents,
+  modelProviderKindPodCredentials,
   normalizeProviderBaseUrl,
   providerModelContextWindow,
   providerRuntime,
@@ -160,6 +163,27 @@ describe("Bedrock runtime credentials", () => {
 });
 
 describe("litellm model providers", () => {
+  it("takes a stored API key or nothing for pods, unlike Bedrock", () => {
+    expect(modelProviderKindPodCredentials("litellm")).toEqual(["api-key", "none"]);
+    expect(modelProviderKindPodCredentials("bedrock")).toEqual([
+      "access-key",
+      "bearer-token",
+      "ambient",
+      "none",
+    ]);
+    expect(isStoredPodCredential("api-key")).toBe(true);
+    expect(isStoredPodCredential("ambient")).toBe(false);
+    expect(isStoredPodCredential("none")).toBe(false);
+  });
+
+  it("finds the picked model only among the agent's models", () => {
+    const models = { "claude-code": [{ id: "local-coder" }] };
+    expect(findProviderModel(models, "claude-code", "local-coder")).toEqual({ id: "local-coder" });
+    expect(findProviderModel(models, "codex", "local-coder")).toBeUndefined();
+    expect(findProviderModel(models, "claude-code", null)).toBeUndefined();
+    expect(findProviderModel(null, "claude-code", "local-coder")).toBeUndefined();
+  });
+
   const launch = { baseUrl: "http://litellm.ai:4000" };
   const credentials = { type: "api-key", apiKey: "sk-optio" } as const;
 
