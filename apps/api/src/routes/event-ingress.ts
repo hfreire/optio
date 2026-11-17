@@ -221,11 +221,13 @@ export async function eventIngressRoutes(rawApp: FastifyInstance) {
 
       const deliveryId = req.headers["x-gitlab-event-uuid"];
       {
-        // Anything about a project may change its MRs' state in the PR panel.
+        // Anything about a project may change its MRs in the PR panel or its issues in the Inbox.
         const project = GitLabProjectRef.safeParse(req.body);
         if (project.success) {
           const { invalidatePrInboxRepo } = await import("../services/pr-inbox-cache.js");
           invalidatePrInboxRepo(project.data.project.web_url);
+          const { invalidateIssueListRepo } = await import("../services/issue-list-cache.js");
+          invalidateIssueListRepo(project.data.project.web_url);
         }
       }
 

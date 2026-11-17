@@ -84,6 +84,7 @@ vi.mock("../workers/task-worker.js", () => ({
 }));
 
 import { issueRoutes } from "./issues.js";
+import { clearIssueListCache, invalidateIssueListRepo } from "../services/issue-list-cache.js";
 
 // ─── Helpers ───
 
@@ -96,6 +97,7 @@ describe("GET /api/issues", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    clearIssueListCache();
     mockDbSelect.mockImplementation(emptyChain);
     app = await buildTestApp();
   });
@@ -342,6 +344,99 @@ describe("GET /api/issues", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().issues).toEqual([]);
+  });
+});
+
+describe("GET /api/issues cache", () => {
+  let app: FastifyInstance;
+  const ri = {
+    platform: "github",
+    host: "github.com",
+    owner: "org",
+    repo: "repo",
+    apiBaseUrl: "https://api.github.com",
+  };
+  const issue = (number: number) => ({
+    id: number,
+    number,
+    title: `Issue ${number}`,
+    body: "",
+    state: "open",
+    url: `https://github.com/org/repo/issues/${number}`,
+    labels: [],
+    author: "jon",
+    assignee: null,
+    isPullRequest: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-02T00:00:00Z",
+  });
+  const chain = (rows: unknown[]) => ({
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn().mockResolvedValue(rows),
+  });
+  const repoRow = {
+    id: "repo-1",
+    repoUrl: "https://github.com/org/repo",
+    fullName: "org/repo",
+    workspaceId: "ws-1",
+  };
+  const listNumbers = async () => {
+    mockDbSelect.mockReturnValueOnce(chain([repoRow])).mockReturnValueOnce(chain([]));
+    const res = await app.inject({ method: "GET", url: "/api/issues" });
+    expect(res.statusCode).toBe(200);
+    return res.json().issues.map((i: { number: number }) => i.number);
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    clearIssueListCache();
+    mockDbSelect.mockImplementation(emptyChain);
+    mockGetGitPlatformForRepo.mockResolvedValue({ platform: mockPlatform, ri });
+    app = await buildTestApp();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers a repeat read from the cache", async () => {
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(1)]);
+    expect(await listNumbers()).toEqual([1]);
+    expect(await listNumbers()).toEqual([1]);
+    expect(mockPlatform.listIssues).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves a stale list at once and re-reads it in the background", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(1)]);
+    await listNumbers();
+    vi.setSystemTime(Date.now() + 31_000);
+
+    let release!: (issues: unknown[]) => void;
+    mockPlatform.listIssues.mockReturnValueOnce(new Promise((r) => (release = r)));
+    expect(await listNumbers()).toEqual([1]);
+    expect(mockPlatform.listIssues).toHaveBeenCalledTimes(2);
+
+    release([issue(1), issue(2)]);
+    await vi.waitFor(async () => expect(await listNumbers()).toEqual([1, 2]));
+    expect(mockPlatform.listIssues).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the platform once the cached list is too old", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(1)]);
+    await listNumbers();
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(2)]);
+    expect(await listNumbers()).toEqual([2]);
+  });
+
+  it("re-reads a repo once it's invalidated", async () => {
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(1)]);
+    await listNumbers();
+    invalidateIssueListRepo("https://github.com/org/repo.git");
+    mockPlatform.listIssues.mockResolvedValueOnce([issue(2)]);
+    expect(await listNumbers()).toEqual([2]);
   });
 });
 
