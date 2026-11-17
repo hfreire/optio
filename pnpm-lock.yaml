@@ -514,6 +514,9 @@ importers:
       '@types/dockerode':
         specifier: ^3.3.47
         version: 3.3.47
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
       '@vitest/coverage-v8':
         specifier: ^4.1.12
         version: 4.1.12(vitest@4.1.12)
