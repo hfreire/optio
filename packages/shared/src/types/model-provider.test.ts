@@ -19,6 +19,7 @@ import {
   providerModelContextWindow,
   providerRuntime,
   withRepoModelProvider,
+  repoClaudeModelApplies,
 } from "./model-provider.js";
 import { secretCredentialId, secretIdFromCredential } from "./agent-credential.js";
 
@@ -298,5 +299,20 @@ describe("a repo's default model provider", () => {
     expect(withRepoModelProvider("codex", {}, repoProvider)).toEqual({});
     expect(withRepoModelProvider("claude-code", {}, null)).toEqual({});
     expect(withRepoModelProvider("claude-code", {}, undefined)).toEqual({});
+  });
+
+  it("the repo's model is its provider's, so only a run through that provider takes it", () => {
+    expect(repoClaudeModelApplies({ modelProvider: repoProvider }, repoProvider)).toBe(true);
+    expect(repoClaudeModelApplies({}, repoProvider)).toBe(false);
+    expect(repoClaudeModelApplies({ credential: secretCredentialId("s1") }, repoProvider)).toBe(
+      false,
+    );
+    expect(
+      repoClaudeModelApplies(
+        { modelProvider: "22222222-2222-2222-2222-222222222222" },
+        repoProvider,
+      ),
+    ).toBe(false);
+    expect(repoClaudeModelApplies({}, null)).toBe(true);
   });
 });

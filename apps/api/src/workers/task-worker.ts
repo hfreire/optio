@@ -27,6 +27,7 @@ import {
   shellQuote,
   describeError,
   stripNul,
+  repoClaudeModelApplies,
   withRepoModelProvider,
 } from "@optio/shared";
 import {
@@ -490,9 +491,14 @@ export function startTaskWorker() {
           const v = agentOptions[key];
           return typeof v === "string" && v !== "" ? v : undefined;
         };
+        const repoModelApplies = repoClaudeModelApplies(
+          reviewOverride ? {} : agentOptions,
+          repoConfig?.claudeModelProviderId,
+        );
         const opt = <K extends string>(key: K): string | undefined => {
           const v = runOpt(key);
           if (v) return v;
+          if (key === "claudeModel" && !repoModelApplies) return undefined;
           const fromRepo = (repoConfig as Record<string, unknown> | null | undefined)?.[key];
           return typeof fromRepo === "string" ? fromRepo : undefined;
         };

@@ -210,6 +210,14 @@ export function withRepoModelProvider(
   return { ...agentOptions, [MODEL_PROVIDER_OPTION_KEY]: repoProviderId };
 }
 
+/** Whether the repo's `claudeModel` fits the run: with a default provider it's that provider's model id. */
+export function repoClaudeModelApplies(
+  agentOptions: Record<string, unknown>,
+  repoProviderId: string | null | undefined,
+): boolean {
+  return !repoProviderId || modelProviderIdFrom(agentOptions) === repoProviderId;
+}
+
 const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d+$/;
 const AWS_PROFILE_RE = /^[A-Za-z0-9._+=@-]{1,64}$/;
 

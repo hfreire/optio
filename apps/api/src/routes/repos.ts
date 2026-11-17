@@ -661,7 +661,11 @@ export async function repoRoutes(rawApp: FastifyInstance) {
         }
       }
 
-      if (body.claudeModelProviderId) {
+      // Only a new pick is checked: a provider edited since mustn't block unrelated saves.
+      if (
+        body.claudeModelProviderId &&
+        body.claudeModelProviderId !== existing.claudeModelProviderId
+      ) {
         const error = await repoModelProviderError(
           body.claudeModelProviderId,
           existing.workspaceId,
