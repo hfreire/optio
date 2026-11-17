@@ -17,7 +17,7 @@ import {
   type WorkLink,
   normalizeRepoUrl,
   shellQuote,
-  type PresetImageId,
+  repoImageConfig,
   type WorkSettings,
 } from "@optio/shared";
 import { getOrCreateRepoPod } from "./repo-pool-service.js";
@@ -96,9 +96,7 @@ export async function createSession(input: {
     repoUrl,
   });
 
-  const imageConfig = repoConfig
-    ? { preset: (repoConfig.imagePreset ?? "base") as PresetImageId }
-    : undefined;
+  const imageConfig = repoConfig ? repoImageConfig(repoConfig) : undefined;
   const pod = await getOrCreateRepoPod(repoUrl, repoBranch, env, imageConfig, {
     workspaceId: input.workspaceId,
     ownerUserId: input.userId,

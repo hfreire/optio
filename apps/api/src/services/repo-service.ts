@@ -13,6 +13,7 @@ export interface RepoRecord {
   defaultBranch: string;
   isPrivate: boolean;
   imagePreset: string | null;
+  customImage: string | null;
   extraPackages: string | null;
   setupCommands: string | null;
   customDockerfile: string | null;
@@ -194,6 +195,7 @@ export async function updateRepo(
   id: string,
   data: {
     imagePreset?: string;
+    customImage?: string | null;
     extraPackages?: string;
     setupCommands?: string;
     customDockerfile?: string | null;
