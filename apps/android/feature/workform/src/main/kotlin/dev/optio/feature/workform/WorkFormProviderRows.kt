@@ -44,6 +44,7 @@ import dev.optio.core.model.VerifyAgentCredentialResult
 import dev.optio.core.navigation.LocalNavigator
 import dev.optio.core.navigation.routes.ModelProvidersRoute
 import dev.optio.core.network.isOrganization
+import dev.optio.core.network.location
 import dev.optio.core.ui.agent.runtimeLabel
 import kotlinx.coroutines.launch
 import dev.optio.core.ui.theme.OptioTheme
@@ -87,7 +88,7 @@ internal fun ProviderRows(state: WorkFormState) {
                 MenuChoice(
                     p.name,
                     selected = p.id == pickedId,
-                    subtitle = reason ?: if (p.isOrganization) "Organization · ${p.region}" else "Private · ${p.region}",
+                    subtitle = reason ?: if (p.isOrganization) "Organization · ${p.location}" else "Private · ${p.location}",
                     enabled = reason == null || p.id == pickedId,
                     onClick = { state.setProvider(p) },
                 )

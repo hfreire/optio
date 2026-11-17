@@ -483,6 +483,8 @@ export type LocalDaemonMessage =
       manageDirs?: boolean;
       /** The daemon runs agents through a model provider (`spec.provider`). */
       modelProviders?: boolean;
+      /** The daemon runs Claude Code through a LiteLLM provider (`spec.provider.kind: "litellm"`). */
+      litellmProviders?: boolean;
       /** AWS profile names in the machine's ~/.aws/config and credentials (names only). */
       awsProfiles?: string[];
       /** The daemon answers `limits-refresh` (reads Codex's limits on request). */

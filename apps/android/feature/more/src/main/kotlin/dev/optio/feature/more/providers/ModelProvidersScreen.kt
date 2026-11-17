@@ -38,10 +38,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.optio.core.model.ModelProvider
+import dev.optio.core.model.ModelProviderKind
 import dev.optio.core.model.ModelProviderPodCredential
 import dev.optio.core.model.ResourceOwner
 import dev.optio.core.network.LocalApiClient
 import dev.optio.core.network.ownerLabel
+import dev.optio.core.network.kindLabel
+import dev.optio.core.network.location
 import dev.optio.core.network.podCredentialLabel
 import dev.optio.core.network.providerAgentLabel
 import dev.optio.core.ui.auth.Roles
@@ -133,7 +136,7 @@ fun ModelProvidersContent(
                     EmptyState(
                         title = "No model providers",
                         icon = Icons.Outlined.Cloud,
-                        message = "A model provider is a saved way for an agent to reach its models — today Amazon Bedrock, for Claude Code and Codex.",
+                        message = "A model provider is a saved way for an agent to reach its models — Amazon Bedrock (Claude Code, Codex) or LiteLLM (Claude Code; set up in the web app).",
                     )
                 }
             } else {
@@ -174,22 +177,23 @@ private fun sectionFooter(scope: OwnerScope): String? = when (scope) {
     OwnerScope.OTHERS -> "Read-only: these run with their owners' credentials."
 }
 
-/** "Bedrock · Organization · Claude Code, Codex · us-west-2 · Pods: access key" ("Private" / "Private · Name" for someone's). */
+/** "Bedrock" / "LiteLLM", then owner, agents, region or URL, pod credential ("Bedrock · Organization · Claude Code, Codex · us-west-2 · Pods: access key"). */
 internal fun providerSummary(p: ModelProvider): String = listOf(
-    "Bedrock",
+    p.kindLabel,
     p.ownerLabel,
     p.agents.joinToString(", ") { providerAgentLabel(it) },
-    p.region,
+    p.location,
     "Pods: ${podCredentialLabel(p.podCredential)}${if (p.hasPodCredentials) " (stored)" else ""}",
 ).joinToString(" · ")
 
 @Composable
 private fun ProviderItem(provider: ModelProvider, onClick: () -> Unit, onDelete: () -> Unit) {
     val colors = OptioTheme.colors
+    val editable = provider.canEdit && provider.kind != ModelProviderKind.LITELLM
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(enabled = provider.canEdit, onClick = onClick)
+            .clickable(enabled = editable, onClick = onClick)
             .padding(start = Spacing.l, end = if (provider.canEdit) Spacing.xs else Spacing.l, top = Spacing.m, bottom = Spacing.m)
             .testTag("provider-${provider.name}"),
         verticalAlignment = Alignment.CenterVertically,
@@ -197,6 +201,7 @@ private fun ProviderItem(provider: ModelProvider, onClick: () -> Unit, onDelete:
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(provider.name, style = OptioTheme.type.body, color = colors.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(providerSummary(provider), style = OptioTheme.type.caption, color = colors.secondaryLabel)
+            if (provider.canEdit && !editable) Text("Edit in the web app", style = OptioTheme.type.caption, color = colors.secondaryLabel)
             provider.localAwsProfile?.let { Text("Machines: AWS profile $it", style = OptioTheme.type.caption, color = colors.secondaryLabel) }
         }
         if (provider.canEdit) {

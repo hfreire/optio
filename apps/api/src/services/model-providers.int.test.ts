@@ -15,6 +15,7 @@ import {
   discoverProviderModels,
   listModelProviders,
   podProviderRuntime,
+  providerClaudeEffort,
   providerLaunch,
   resolveProviderForWork,
   updateModelProvider,
@@ -232,6 +233,46 @@ describe("model providers", () => {
         bob,
       ),
     ).rejects.toThrow(ModelProviderError);
+  });
+
+  it("keeps a stored key from following a new URL", async () => {
+    const p = await createModelProvider(litellm(), admin);
+    await expect(
+      updateModelProvider(p.id, { baseUrl: "http://evil.example:4000" }, admin),
+    ).rejects.toThrow(/Enter the key again/);
+    const moved = await updateModelProvider(
+      p.id,
+      {
+        baseUrl: "http://litellm2.ai:4000",
+        credentials: { type: "api-key", apiKey: "sk-new" },
+      },
+      admin,
+    );
+    expect(moved.baseUrl).toBe("http://litellm2.ai:4000");
+  });
+
+  it("only reads the machine key from a LITELLM env var", async () => {
+    await expect(
+      createModelProvider(litellm({ localApiKeyEnv: "GITHUB_TOKEN" }), admin),
+    ).rejects.toThrow(/LITELLM/);
+    const p = await createModelProvider(litellm({ localApiKeyEnv: "MY_LITELLM_KEY" }), admin);
+    expect(p.localApiKeyEnv).toBe("MY_LITELLM_KEY");
+  });
+
+  it("drops an effort the picked LiteLLM model doesn't take", async () => {
+    const p = await createModelProvider(litellm(), admin);
+    const row = (await resolveProviderForWork({
+      agentType: "claude-code",
+      agentOptions: { modelProvider: p.id },
+      workspaceId: ws,
+      ownerUserId: null,
+      runsOn: "pod",
+    }))!;
+    const coder = podProviderRuntime(row, "claude-code", "local-coder");
+    expect(providerClaudeEffort(coder, "high")).toBe("high");
+    expect(providerClaudeEffort(coder, "max")).toBeUndefined();
+    const big = podProviderRuntime(row, "claude-code", "big");
+    expect(providerClaudeEffort(big, "max")).toBe("max");
   });
 
   it("gives machines only the region and the AWS profile", async () => {

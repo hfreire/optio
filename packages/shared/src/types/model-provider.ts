@@ -201,9 +201,15 @@ export function isValidAwsProfileName(name: string): boolean {
 
 const ENV_VAR_RE = /^[A-Z_][A-Z0-9_]{0,127}$/;
 
-export function isValidEnvVarName(name: string): boolean {
-  return ENV_VAR_RE.test(name);
+/**
+ * An env var a machine reads its LiteLLM key from. Naming LITELLM keeps an
+ * org provider from sending a member's unrelated secrets to its URL.
+ */
+export function isValidLitellmKeyEnv(name: string): boolean {
+  return ENV_VAR_RE.test(name) && name.includes("LITELLM");
 }
+
+export const DEFAULT_LITELLM_KEY_ENV = "LITELLM_API_KEY";
 
 /** An http(s) URL with no userinfo, query or fragment: a CLI appends its own paths. */
 export function isValidProviderBaseUrl(raw: string): boolean {

@@ -124,6 +124,7 @@ export async function localDaemonWs(app: FastifyInstance) {
           transcriptBackfill: msg.transcriptBackfill === true,
           manageDirs: msg.manageDirs === true,
           modelProviders: msg.modelProviders === true,
+          litellmProviders: msg.litellmProviders === true,
           refreshLimits: msg.refreshLimits === true,
           answersQueries: msg.answersQueries === true,
         });

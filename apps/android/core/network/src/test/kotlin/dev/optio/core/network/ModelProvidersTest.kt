@@ -72,6 +72,20 @@ class ModelProvidersTest {
     }
 
     @Test
+    fun litellmProviderDecodesWithoutARegion() = runTest {
+        val json = providerJson
+            .replace("\"kind\":\"bedrock\"", "\"kind\":\"litellm\"")
+            .replace("\"region\":\"us-west-2\"", "\"region\":null,\"baseUrl\":\"http://litellm.ai:4000\"")
+            .replace("\"access-key\"", "\"api-key\"")
+        enqueue("""{"providers":[$json]}""")
+        val p = api.listModelProviders().single()
+        assertNull(p.region)
+        assertEquals("LiteLLM", p.kindLabel)
+        assertEquals("http://litellm.ai:4000", p.location)
+        assertEquals("API key", podCredentialLabel(p.podCredential))
+    }
+
+    @Test
     fun unknownCredentialKindDecodesToUnknown() = runTest {
         enqueue("""{"providers":[${providerJson.replace("\"access-key\"", "\"sso\"")}]}""")
         assertEquals(ModelProviderPodCredential.UNKNOWN, api.listModelProviders().single().podCredential)

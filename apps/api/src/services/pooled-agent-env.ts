@@ -5,7 +5,11 @@ import {
 } from "@optio/agent-adapters";
 import { piProviderSecrets } from "./pi-provider-secrets.js";
 import { agentOptionsEnv } from "./agent-options-env.js";
-import { podProviderRuntime, resolveProviderForWork } from "./model-provider-service.js";
+import {
+  podProviderRuntime,
+  providerClaudeEffort,
+  resolveProviderForWork,
+} from "./model-provider-service.js";
 import {
   credentialRuntime,
   resolveCredentialForWork,
@@ -40,10 +44,21 @@ export async function pooledAgentEnv(
     ownerUserId,
     runsOn: "pod",
   });
-  const optionsEnv = agentOptionsEnv(agent.agentRuntime, agent.agentOptions, agent.model);
+  const workOptionsEnv = agentOptionsEnv(agent.agentRuntime, agent.agentOptions, agent.model);
   const providerRuntime = providerRow
-    ? podProviderRuntime(providerRow, agent.agentRuntime, optionsEnv.OPTIO_CLAUDE_MODEL)
+    ? podProviderRuntime(providerRow, agent.agentRuntime, workOptionsEnv.OPTIO_CLAUDE_MODEL)
     : null;
+  const effort = workOptionsEnv.CLAUDE_CODE_EFFORT_LEVEL;
+  const optionsEnv =
+    effort && !providerClaudeEffort(providerRuntime, effort)
+      ? agentOptionsEnv(
+          agent.agentRuntime,
+          Object.fromEntries(
+            Object.entries(agent.agentOptions ?? {}).filter(([k]) => k !== "claudeEffort"),
+          ),
+          agent.model,
+        )
+      : workOptionsEnv;
   // A credential picked for the work (one of the agent's sign-in secrets):
   // its value signs the agent in and sets the auth mode, over the deployment's.
   const picked = providerRuntime

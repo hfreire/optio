@@ -9,6 +9,7 @@ import {
   modelProviderKindAgents,
   modelProviderKindPodCredentials,
   type ModelProvider,
+  isStoredPodCredential,
   type ModelProviderModel,
   type ResourceOwner,
 } from "@optio/shared";
@@ -34,7 +35,6 @@ import {
   formatModels,
   parseModels,
   podsLabel,
-  storesCredential,
   toCreateInput,
   toUpdateInput,
   toggleAgent,
@@ -238,6 +238,10 @@ function ProviderEditor({
   );
   const [saving, setSaving] = useState(false);
   const [fetching, setFetching] = useState(false);
+  // Context windows and efforts seen so far, kept while a model line is retyped.
+  const [knownModels, setKnownModels] = useState<ModelProviderModel[]>(() =>
+    Object.values(form.models).flatMap((m) => m ?? []),
+  );
   const set = (patch: Partial<ProviderForm>) => setForm((f) => ({ ...f, ...patch }));
   const syncText = (f: ProviderForm) =>
     setModelText(
@@ -246,7 +250,7 @@ function ProviderEditor({
 
   const error = validateProviderForm(form, creating);
   const litellm = form.kind === "litellm";
-  const stores = storesCredential(form.podCredential);
+  const stores = isStoredPodCredential(form.podCredential);
   // Stored credentials of the kind picked now (Replace / Clear / Keep apply).
   const sameStored = !!original?.hasPodCredentials && original.podCredential === form.podCredential;
   const showCredFields = stores && (creating || form.credentialAction === "replace");
@@ -267,6 +271,7 @@ function ProviderEditor({
         ...(original ? { providerId: original.id } : {}),
       });
       const next = withDiscoveredModels(form, "claude-code", models);
+      setKnownModels((k) => [...k, ...models]);
       setForm(next);
       syncText(next);
       toast.success(`${models.length} model${models.length === 1 ? "" : "s"} found`);
@@ -387,6 +392,16 @@ function ProviderEditor({
               </button>
             )}
           </div>
+          {litellm && form.podCredential === "none" && (
+            <input
+              type="password"
+              value={form.apiKey}
+              onChange={(e) => set({ apiKey: e.target.value })}
+              placeholder="LiteLLM key to list the models (not saved)"
+              autoComplete="off"
+              className={cn(INPUT, "mb-2")}
+            />
+          )}
           <textarea
             rows={Math.max(2, (modelText[a] ?? "").split("\n").length)}
             value={modelText[a] ?? ""}
@@ -394,7 +409,10 @@ function ProviderEditor({
               setModelText((t) => ({ ...t, [a]: e.target.value }));
               setForm((f) => ({
                 ...f,
-                models: { ...f.models, [a]: parseModels(e.target.value, f.models[a]) },
+                models: {
+                  ...f.models,
+                  [a]: parseModels(e.target.value, [...knownModels, ...(f.models[a] ?? [])]),
+                },
               }));
             }}
             className={cn(INPUT, "font-mono text-xs resize-y")}
