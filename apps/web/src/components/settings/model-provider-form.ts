@@ -281,6 +281,7 @@ export function validateProviderForm(f: ProviderForm, creating: boolean): string
     if (f.podCredential === "api-key" && (creating || f.credentialAction === "replace")) {
       if (!f.apiKey.trim()) return "Enter the LiteLLM key, or make it machines only.";
     }
+    if (f.agents.some((a) => !f.models[a]?.length)) return "Pick at least one model to offer.";
     return null;
   }
   if (!isValidAwsRegion(f.region.trim())) return "Region looks like us-west-2.";

@@ -30,7 +30,7 @@ const PROVIDER_KIND_TEXT: Record<ModelProviderKind, { label: string; about: stri
       "Amazon Bedrock is a model provider: a region, the models it offers {agent}, and the AWS credentials a pod signs in with.",
   },
   litellm: {
-    label: "LiteLLM…",
+    label: "LiteLLM",
     about:
       "A LiteLLM proxy is a model provider: its URL, the models it offers {agent} (fetched from the proxy), and the key a pod signs in with.",
   },

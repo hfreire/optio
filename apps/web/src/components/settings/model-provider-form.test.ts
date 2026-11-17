@@ -146,9 +146,11 @@ describe("LiteLLM provider form", () => {
     const withUrl = { ...f, baseUrl: "http://litellm.ai:4000" };
     expect(validateProviderForm(withUrl, true)).toMatch(/LiteLLM key/);
     const withKey = { ...withUrl, apiKey: "sk-1" };
-    expect(validateProviderForm(withKey, true)).toBeNull();
-    expect(validateProviderForm({ ...withKey, localApiKeyEnv: "not ok" }, true)).toMatch(/env var/);
-    expect(validateProviderForm({ ...withKey, baseUrl: "litellm:4000" }, true)).toMatch(/URL/);
+    expect(validateProviderForm(withKey, true)).toMatch(/at least one model/);
+    const picked = { ...withKey, models: { "claude-code": [{ id: "local-coder" }] } };
+    expect(validateProviderForm(picked, true)).toBeNull();
+    expect(validateProviderForm({ ...picked, localApiKeyEnv: "not ok" }, true)).toMatch(/env var/);
+    expect(validateProviderForm({ ...picked, baseUrl: "litellm:4000" }, true)).toMatch(/URL/);
   });
 
   it("sends the URL, the key and the env var, no region", () => {
