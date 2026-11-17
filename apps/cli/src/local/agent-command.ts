@@ -5,7 +5,9 @@ import {
   type LocalAgentPermissionMode,
   type LocalAgentSessionMode,
   type ModelProviderLaunch,
-  bedrockRuntime,
+  isValidEnvVarName,
+  modelProviderKindAgents,
+  providerRuntime,
 } from "@optio/shared";
 import type { ClaudeCliCaps } from "./cli-probes.js";
 
@@ -37,11 +39,15 @@ export interface AgentCommandOptions {
    */
   claudeCaps?: ClaudeCliCaps | null;
   /**
-   * Reach the models through a model provider (Amazon Bedrock) with this
-   * machine's own AWS credentials: its region and, optionally, which of the
-   * machine's AWS profiles to use. Claude Code and Codex only.
+   * Reach the models through a model provider with this machine's own
+   * credentials: Amazon Bedrock (region and, optionally, which AWS profile;
+   * Claude Code and Codex) or a LiteLLM proxy (its URL and the env var
+   * holding the key; Claude Code).
    */
-  provider?: Pick<ModelProviderLaunch, "region" | "awsProfile"> | null;
+  provider?: Pick<
+    ModelProviderLaunch,
+    "kind" | "region" | "awsProfile" | "baseUrl" | "apiKeyEnv" | "model"
+  > | null;
 }
 
 /**
@@ -68,12 +74,33 @@ export function buildAgentCommand(
   hookSettingsPath: string,
   opts: AgentCommandOptions = {},
 ): string {
-  const provider =
-    opts.provider && (agent === "claude-code" || agent === "codex")
-      ? bedrockRuntime(agent, opts.provider)
-      : null;
-  const command = agentCli(agent, prompt, hookSettingsPath, opts, provider?.codexConfig ?? []);
-  return provider ? withProviderEnv(provider.env, !!opts.provider?.awsProfile, command) : command;
+  const launch = opts.provider;
+  if (
+    !launch ||
+    (agent !== "claude-code" && agent !== "codex") ||
+    !modelProviderKindAgents(launch.kind).includes(agent)
+  ) {
+    return agentCli(agent, prompt, hookSettingsPath, opts, []);
+  }
+  const runtime = providerRuntime(agent, launch);
+  const command = agentCli(agent, prompt, hookSettingsPath, opts, runtime.codexConfig);
+  if (launch.kind === "litellm") return withLitellmEnv(runtime.env, launch.apiKeyEnv, command);
+  return withProviderEnv(runtime.env, !!launch.awsProfile, command);
+}
+
+/**
+ * The key is read from the machine's own env var at launch (the server never
+ * sends it), and an exported ANTHROPIC_API_KEY is dropped so a real Anthropic
+ * key never reaches the proxy.
+ */
+function withLitellmEnv(
+  env: Record<string, string>,
+  apiKeyEnv: string | undefined,
+  command: string,
+): string {
+  const token =
+    apiKeyEnv && isValidEnvVarName(apiKeyEnv) ? ` ANTHROPIC_AUTH_TOKEN="$${apiKeyEnv}"` : "";
+  return withProviderEnv(env, false, command).replace(/^env /, `env -u ANTHROPIC_API_KEY${token} `);
 }
 
 /**

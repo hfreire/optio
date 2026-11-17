@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Cloud, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
+import { Cloud, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import {
   MODEL_PROVIDER_AGENTS,
-  MODEL_PROVIDER_POD_CREDENTIALS,
+  MODEL_PROVIDER_KINDS,
+  modelProviderKindAgents,
+  modelProviderKindPodCredentials,
   type ModelProvider,
+  type ModelProviderModel,
   type ResourceOwner,
 } from "@optio/shared";
 import { api } from "@/lib/api-client";
@@ -24,16 +27,19 @@ import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/ui/input";
 import {
   AGENT_LABELS,
+  KIND_LABELS,
   POD_CREDENTIAL_LABELS,
   emptyProviderForm,
   formFromProvider,
   formatModels,
   parseModels,
   podsLabel,
+  storesCredential,
   toCreateInput,
   toUpdateInput,
   toggleAgent,
   validateProviderForm,
+  withDiscoveredModels,
   withRegion,
   type ProviderForm,
 } from "./model-provider-form";
@@ -43,7 +49,8 @@ const LABEL = "block text-xs text-text-muted mb-1";
 
 /**
  * Settings → Model providers: saved ways for an agent to reach its models
- * (Amazon Bedrock for Claude Code and Codex), the organization's or private.
+ * (Amazon Bedrock for Claude Code and Codex, a LiteLLM proxy for Claude
+ * Code), the organization's or private.
  * Listed by scope — Organization / Private, plus Other people's for an admin,
  * read-only. Work picks one in its Who section.
  */
@@ -110,8 +117,8 @@ export function ModelProvidersManager() {
       bodyClassName="p-4 space-y-4"
     >
       <p className="text-xs text-text-muted">
-        A saved way for an agent to reach its models — today Amazon Bedrock for Claude Code and
-        Codex. Work picks one under Who.
+        A saved way for an agent to reach its models — Amazon Bedrock for Claude Code and Codex, or
+        a LiteLLM proxy for Claude Code. Work picks one under Who.
       </p>
 
       {editing !== null && (
@@ -161,7 +168,7 @@ export function ModelProvidersManager() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-medium truncate">{p.name}</span>
                     <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-medium">
-                      Bedrock
+                      {p.kind === "litellm" ? "LiteLLM" : "Bedrock"}
                     </span>
                     {/* Sections already say the scope; the chip is for a flat list. */}
                     {scope === null && <OwnerChip row={p} viewerId={userId} />}
@@ -172,8 +179,10 @@ export function ModelProvidersManager() {
                     )}
                   </div>
                   <p className="text-xs text-text-muted mt-0.5">
-                    {p.agents.map((a) => AGENT_LABELS[a]).join(", ")} · {p.region} · {podsLabel(p)}
+                    {p.agents.map((a) => AGENT_LABELS[a]).join(", ")} ·{" "}
+                    {p.kind === "litellm" ? p.baseUrl : p.region} · {podsLabel(p)}
                     {p.localAwsProfile ? ` · AWS profile ${p.localAwsProfile} on machines` : ""}
+                    {p.localApiKeyEnv ? ` · $${p.localApiKeyEnv} on machines` : ""}
                   </p>
                 </div>
                 {p.canEdit && (
@@ -228,6 +237,7 @@ function ProviderEditor({
     Object.fromEntries(MODEL_PROVIDER_AGENTS.map((a) => [a, formatModels(form.models[a])])),
   );
   const [saving, setSaving] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const set = (patch: Partial<ProviderForm>) => setForm((f) => ({ ...f, ...patch }));
   const syncText = (f: ProviderForm) =>
     setModelText(
@@ -235,10 +245,39 @@ function ProviderEditor({
     );
 
   const error = validateProviderForm(form, creating);
-  const stores = form.podCredential === "access-key" || form.podCredential === "bearer-token";
+  const litellm = form.kind === "litellm";
+  const stores = storesCredential(form.podCredential);
   // Stored credentials of the kind picked now (Replace / Clear / Keep apply).
   const sameStored = !!original?.hasPodCredentials && original.podCredential === form.podCredential;
   const showCredFields = stores && (creating || form.credentialAction === "replace");
+
+  const switchKind = (kind: ProviderForm["kind"]) => {
+    const next = { ...emptyProviderForm(isAdmin, kind), owner: form.owner };
+    setForm(next);
+    syncText(next);
+  };
+
+  const fetchModels = async () => {
+    setFetching(true);
+    try {
+      const { models } = await api.discoverModelProviderModels({
+        kind: "litellm",
+        baseUrl: form.baseUrl.trim(),
+        ...(form.apiKey.trim() ? { apiKey: form.apiKey.trim() } : {}),
+        ...(original ? { providerId: original.id } : {}),
+      });
+      const next = withDiscoveredModels(form, "claude-code", models);
+      setForm(next);
+      syncText(next);
+      toast.success(`${models.length} model${models.length === 1 ? "" : "s"} found`);
+    } catch (err) {
+      toast.error("Couldn't list the models", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const save = async () => {
     if (error) return;
@@ -258,6 +297,13 @@ function ProviderEditor({
 
   return (
     <div className="p-4 rounded-lg border border-primary/30 bg-primary/5 space-y-4">
+      {creating && (
+        <Segmented
+          value={form.kind}
+          onChange={switchKind}
+          options={MODEL_PROVIDER_KINDS.map((k) => ({ value: k, label: KIND_LABELS[k] }))}
+        />
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className={LABEL}>Name</label>
@@ -276,7 +322,7 @@ function ProviderEditor({
         <div>
           <label className={LABEL}>Agents</label>
           <div className="flex gap-4 py-1.5">
-            {MODEL_PROVIDER_AGENTS.map((a) => (
+            {modelProviderKindAgents(form.kind).map((a) => (
               <label key={a} className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
@@ -293,51 +339,97 @@ function ProviderEditor({
             ))}
           </div>
         </div>
-        <div>
-          <label className={LABEL}>Region</label>
-          <input
-            value={form.region}
-            onChange={(e) => {
-              const next = withRegion(form, e.target.value.trim());
-              setForm(next);
-              syncText(next);
-            }}
-            placeholder="us-west-2"
-            className={cn(INPUT, "font-mono")}
-          />
-        </div>
+        {litellm ? (
+          <div>
+            <label className={LABEL}>URL</label>
+            <input
+              value={form.baseUrl}
+              onChange={(e) => set({ baseUrl: e.target.value })}
+              placeholder="http://litellm.ai.svc.cluster.local:4000"
+              className={cn(INPUT, "font-mono")}
+            />
+          </div>
+        ) : (
+          <div>
+            <label className={LABEL}>Region</label>
+            <input
+              value={form.region}
+              onChange={(e) => {
+                const next = withRegion(form, e.target.value.trim());
+                setForm(next);
+                syncText(next);
+              }}
+              placeholder="us-west-2"
+              className={cn(INPUT, "font-mono")}
+            />
+          </div>
+        )}
       </div>
 
       {form.agents.map((a) => (
         <div key={a}>
-          <label className={LABEL}>
-            {AGENT_LABELS[a]} models{" "}
-            <span className="text-text-muted/60">
-              (one per line, “id | label”; first is the default)
-            </span>
-          </label>
+          <div className="flex items-center justify-between gap-2">
+            <label className={LABEL}>
+              {AGENT_LABELS[a]} models{" "}
+              <span className="text-text-muted/60">
+                (one per line, “id | label”; first is the default)
+              </span>
+            </label>
+            {litellm && (
+              <button
+                type="button"
+                onClick={fetchModels}
+                disabled={fetching || !form.baseUrl.trim()}
+                className="mb-1 flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50 disabled:no-underline"
+              >
+                <RefreshCw className={cn("w-3 h-3", fetching && "animate-spin")} />
+                {form.models[a]?.length ? "Refresh models" : "Fetch models"}
+              </button>
+            )}
+          </div>
           <textarea
             rows={Math.max(2, (modelText[a] ?? "").split("\n").length)}
             value={modelText[a] ?? ""}
             onChange={(e) => {
               setModelText((t) => ({ ...t, [a]: e.target.value }));
-              setForm((f) => ({ ...f, models: { ...f.models, [a]: parseModels(e.target.value) } }));
+              setForm((f) => ({
+                ...f,
+                models: { ...f.models, [a]: parseModels(e.target.value, f.models[a]) },
+              }));
             }}
             className={cn(INPUT, "font-mono text-xs resize-y")}
           />
+          {litellm && <ModelLimits models={form.models[a]} />}
         </div>
       ))}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-border/50">
         <div>
           <p className="text-xs font-medium mb-2">On your machines</p>
-          <label className={LABEL}>AWS profile (optional)</label>
-          <input
-            value={form.localAwsProfile}
-            onChange={(e) => set({ localAwsProfile: e.target.value })}
-            placeholder="Blank = the machine's default AWS credentials"
-            className={cn(INPUT, "font-mono")}
-          />
+          {litellm ? (
+            <>
+              <label className={LABEL}>Env var holding the key (optional)</label>
+              <input
+                value={form.localApiKeyEnv}
+                onChange={(e) => set({ localApiKeyEnv: e.target.value })}
+                placeholder="LITELLM_API_KEY"
+                className={cn(INPUT, "font-mono")}
+              />
+              <p className="text-[11px] text-text-muted mt-1.5">
+                Read from the machine's environment at launch; the key never leaves the machine.
+              </p>
+            </>
+          ) : (
+            <>
+              <label className={LABEL}>AWS profile (optional)</label>
+              <input
+                value={form.localAwsProfile}
+                onChange={(e) => set({ localAwsProfile: e.target.value })}
+                placeholder="Blank = the machine's default AWS credentials"
+                className={cn(INPUT, "font-mono")}
+              />
+            </>
+          )}
         </div>
         <div>
           <p className="text-xs font-medium mb-2">In pods</p>
@@ -351,7 +443,7 @@ function ProviderEditor({
                   original?.hasPodCredentials && original.podCredential === c ? "keep" : "replace",
               })
             }
-            options={MODEL_PROVIDER_POD_CREDENTIALS.map((c) => ({
+            options={modelProviderKindPodCredentials(form.kind).map((c) => ({
               value: c,
               label: POD_CREDENTIAL_LABELS[c],
             }))}
@@ -396,7 +488,16 @@ function ProviderEditor({
           )}
           {showCredFields && (
             <div className="space-y-2 mt-2">
-              {form.podCredential === "access-key" ? (
+              {form.podCredential === "api-key" ? (
+                <input
+                  type="password"
+                  value={form.apiKey}
+                  onChange={(e) => set({ apiKey: e.target.value })}
+                  placeholder="LiteLLM key (sk-…)"
+                  autoComplete="off"
+                  className={INPUT}
+                />
+              ) : form.podCredential === "access-key" ? (
                 <>
                   <input
                     value={form.accessKeyId}
@@ -459,5 +560,22 @@ function ProviderEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+/** What the proxy reported per model, which the textarea doesn't show. */
+function ModelLimits({ models }: { models: ModelProviderModel[] | undefined }) {
+  const known = (models ?? []).filter((m) => m.contextWindow || m.efforts?.length);
+  if (!known.length) return null;
+  return (
+    <ul className="mt-1.5 space-y-0.5 text-[11px] text-text-muted">
+      {known.map((m) => (
+        <li key={m.id}>
+          <span className="font-mono">{m.id}</span>
+          {m.contextWindow ? ` · ${Math.round(m.contextWindow / 1000)}k context` : ""}
+          {m.efforts?.length ? ` · effort ${m.efforts.join("/")}` : ""}
+        </li>
+      ))}
+    </ul>
   );
 }

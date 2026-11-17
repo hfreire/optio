@@ -1119,7 +1119,7 @@ export const connections = pgTable(
   ],
 );
 
-// ── Model providers (Bedrock for Claude Code / Codex) ──────────────────────
+// ── Model providers (Bedrock / LiteLLM for Claude Code, Bedrock for Codex) ──────────────────────
 
 export const modelProviders = pgTable(
   "model_providers",
@@ -1129,17 +1129,24 @@ export const modelProviders = pgTable(
     // Null = the organization's; set = one person's own.
     ownerUserId: uuid("owner_user_id").references(() => users.id, { onDelete: "cascade" }),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
-    kind: text("kind").$type<"bedrock">().notNull().default("bedrock"),
+    kind: text("kind").$type<"bedrock" | "litellm">().notNull().default("bedrock"),
     name: text("name").notNull(),
     agents: jsonb("agents").$type<string[]>().notNull().default([]),
-    region: text("region").notNull(),
+    region: text("region"),
+    baseUrl: text("base_url"),
     models: jsonb("models")
-      .$type<Record<string, Array<{ id: string; label?: string }>>>()
+      .$type<
+        Record<
+          string,
+          Array<{ id: string; label?: string; contextWindow?: number; efforts?: string[] }>
+        >
+      >()
       .notNull()
       .default({}),
     localAwsProfile: text("local_aws_profile"),
+    localApiKeyEnv: text("local_api_key_env"),
     podCredential: text("pod_credential")
-      .$type<"access-key" | "bearer-token" | "ambient" | "none">()
+      .$type<"access-key" | "bearer-token" | "ambient" | "api-key" | "none">()
       .notNull()
       .default("none"),
     // AES-256-GCM JSON of the pod credentials; never returned by the API.

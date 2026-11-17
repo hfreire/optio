@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { REMOTE_WORKSPACE_PROVIDERS } from "@optio/shared";
+import { MODEL_PROVIDER_KINDS, REMOTE_WORKSPACE_PROVIDERS } from "@optio/shared";
 
 export const LocalHostDirSchema = z
   .object({
@@ -149,15 +149,25 @@ export const LocalTerminalSpecSchema = z
         ),
       provider: z
         .object({
-          kind: z.literal("bedrock"),
+          kind: z.enum(MODEL_PROVIDER_KINDS),
           providerId: z.string().uuid(),
           name: z.string().max(100),
-          region: z.string().max(40),
+          region: z.string().max(40).optional(),
           awsProfile: z.string().max(64).optional(),
+          baseUrl: z.string().max(500).optional(),
+          apiKeyEnv: z.string().max(128).optional(),
+          model: z
+            .object({
+              id: z.string().max(200),
+              label: z.string().max(100).optional(),
+              contextWindow: z.number().int().positive().optional(),
+              efforts: z.array(z.string().max(20)).max(10).optional(),
+            })
+            .optional(),
         })
         .optional()
         .describe(
-          "Reach the models through this model provider (Amazon Bedrock) with the machine's own AWS credentials. On create only `providerId` counts: the rest is filled in from the provider",
+          "Reach the models through this model provider with the machine's own credentials: Amazon Bedrock (AWS region/profile) or a LiteLLM proxy (URL, and the env var holding the key). On create only `providerId` counts: the rest is filled in from the provider",
         ),
     }),
   ])

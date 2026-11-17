@@ -118,6 +118,11 @@ from the work's own agent options or, as below, from its `config.toml`.
 
 ### 5. Claude Code
 
+Prefer a **LiteLLM model provider** (Settings → Model providers → LiteLLM): its models are
+fetched from the proxy, picked under Who → "Signed in with", and the context window, effort and
+Claude Code's internal model calls follow the picked model. See
+[Model providers](model-providers.md#litellm-providers). The connection route below still works.
+
 No extra step — the agent takes the base URL from the connection (`ANTHROPIC_BASE_URL`) and
 the key from the secret. The manifest sets `claudeModel: coding-router`.
 

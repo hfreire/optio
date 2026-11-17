@@ -21,10 +21,11 @@ public enum AgentCredentialMethod: String, Codable, Hashable, Sendable, CaseIter
     case githubToken = "github-token"
     case vertexAi = "vertex-ai"
     case bedrock = "bedrock"
+    case litellm = "litellm"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [AgentCredentialMethod] = [.apiKey, .oauthToken, .appServer, .githubToken, .vertexAi, .bedrock]
+    public static let allCases: [AgentCredentialMethod] = [.apiKey, .oauthToken, .appServer, .githubToken, .vertexAi, .bedrock, .litellm]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -425,10 +426,11 @@ public enum ClaudeAuthMode: String, Codable, Hashable, Sendable, CaseIterable {
     case maxSubscription = "max-subscription"
     case vertexAi = "vertex-ai"
     case bedrock = "bedrock"
+    case litellm = "litellm"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [ClaudeAuthMode] = [.apiKey, .maxSubscription, .vertexAi, .bedrock]
+    public static let allCases: [ClaudeAuthMode] = [.apiKey, .maxSubscription, .vertexAi, .bedrock, .litellm]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -546,8 +548,8 @@ public struct AgentTaskInput: Codable, Hashable, Sendable {
     public let googleCloudProject: String?
     public let googleCloudLocation: String?
     public let claudeVertexServiceAccountKey: String?
-    /// Env that points the agent at a model provider (Bedrock), from
-    /// `bedrockRuntime`; set with `claudeAuthMode` / `codexAuthMode` = "bedrock".
+    /// Env that points the agent at a model provider, from `providerRuntime`;
+    /// set with `claudeAuthMode` = "bedrock" / "litellm" or `codexAuthMode` = "bedrock".
     public let modelProviderEnv: [String: String]?
     /// Codex `-c` overrides for the model provider (`model_provider="amazon-bedrock"`).
     public let codexProviderConfig: [String]?
@@ -4214,9 +4216,9 @@ public enum LocalTerminalSpec: Codable, Hashable, Sendable {
         /// "Work on a new branch that becomes a PR": the server wraps the prompt
         /// with branch-and-PR instructions off this base before the spawn.
         public let baseBranch: String?
-        /// Reach the models through this provider (Amazon Bedrock) instead of
-        /// the CLI's own sign-in, with the machine's own AWS credentials. Only
-        /// sent to daemons whose hello set `modelProviders`.
+        /// Reach the models through this provider instead of the CLI's own
+        /// sign-in, with the machine's own credentials. Only sent to daemons
+        /// whose hello set `modelProviders`.
         public let provider: ModelProviderLaunch?
 
         private enum CodingKeys: String, CodingKey {
@@ -6512,10 +6514,11 @@ public struct UpdateInstalledSkillInput: Codable, Hashable, Sendable {
 
 public enum ModelProviderKind: String, Codable, Hashable, Sendable, CaseIterable {
     case bedrock = "bedrock"
+    case litellm = "litellm"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [ModelProviderKind] = [.bedrock]
+    public static let allCases: [ModelProviderKind] = [.bedrock, .litellm]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -6541,16 +6544,18 @@ public enum ModelProviderAgent: String, Codable, Hashable, Sendable, CaseIterabl
 /// - `access-key`: stored AWS access key id + secret (+ optional session token)
 /// - `bearer-token`: a stored Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`)
 /// - `ambient`: the pod's own AWS identity (IRSA / instance profile on EKS)
+/// - `api-key`: a stored LiteLLM key
 /// - `none`: machines only — work in a pod can't use it
 public enum ModelProviderPodCredential: String, Codable, Hashable, Sendable, CaseIterable {
     case accessKey = "access-key"
     case bearerToken = "bearer-token"
     case ambient = "ambient"
+    case apiKey = "api-key"
     case none = "none"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [ModelProviderPodCredential] = [.accessKey, .bearerToken, .ambient, .none]
+    public static let allCases: [ModelProviderPodCredential] = [.accessKey, .bearerToken, .ambient, .apiKey, .none]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -6563,15 +6568,28 @@ public struct ModelProviderModel: Codable, Hashable, Sendable {
     public let id: String
     /// Shown in pickers; the id when absent.
     public let label: String?
+    /// Input tokens the model takes; absent = unknown (treated as 200k).
+    public let contextWindow: Double?
+    /// Effort levels it accepts; absent = every level, empty = none.
+    public let efforts: [String]?
 
     private enum CodingKeys: String, CodingKey {
         case id = "id"
         case label = "label"
+        case contextWindow = "contextWindow"
+        case efforts = "efforts"
     }
 
-    public init(id: String, label: String? = nil) {
+    public init(
+        id: String,
+        label: String? = nil,
+        contextWindow: Double? = nil,
+        efforts: [String]? = nil
+    ) {
         self.id = id
         self.label = label
+        self.contextWindow = contextWindow
+        self.efforts = efforts
     }
 }
 
@@ -6616,12 +6634,16 @@ public struct ModelProvider: Codable, Hashable, Sendable {
     public let kind: ModelProviderKind
     public let name: String
     public let agents: [ModelProviderAgent]
-    /// AWS region the runtime calls (`us-west-2`).
-    public let region: String
+    /// AWS region the runtime calls (`us-west-2`); Bedrock only.
+    public let region: String?
+    /// The proxy's URL (`http://litellm.ai:4000`); LiteLLM only.
+    public let baseUrl: String?
     /// The models offered for each agent, in picker order; the first is the default.
     public let models: ModelProviderModels
     /// AWS profile to use on a machine; null = the machine's default AWS credentials.
     public let localAwsProfile: String?
+    /// LiteLLM: the machine env var holding its key; null = the machine's own sign-in env.
+    public let localApiKeyEnv: String?
     public let podCredential: ModelProviderPodCredential
     /// Whether stored pod credentials exist (the values are never returned).
     public let hasPodCredentials: Bool
@@ -6641,8 +6663,10 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         case name = "name"
         case agents = "agents"
         case region = "region"
+        case baseUrl = "baseUrl"
         case models = "models"
         case localAwsProfile = "localAwsProfile"
+        case localApiKeyEnv = "localApiKeyEnv"
         case podCredential = "podCredential"
         case hasPodCredentials = "hasPodCredentials"
         case mine = "mine"
@@ -6659,9 +6683,11 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         kind: ModelProviderKind,
         name: String,
         agents: [ModelProviderAgent],
-        region: String,
+        region: String? = nil,
+        baseUrl: String? = nil,
         models: ModelProviderModels,
         localAwsProfile: String? = nil,
+        localApiKeyEnv: String? = nil,
         podCredential: ModelProviderPodCredential,
         hasPodCredentials: Bool,
         mine: Bool,
@@ -6677,8 +6703,10 @@ public struct ModelProvider: Codable, Hashable, Sendable {
         self.name = name
         self.agents = agents
         self.region = region
+        self.baseUrl = baseUrl
         self.models = models
         self.localAwsProfile = localAwsProfile
+        self.localApiKeyEnv = localApiKeyEnv
         self.podCredential = podCredential
         self.hasPodCredentials = hasPodCredentials
         self.mine = mine
@@ -6691,6 +6719,7 @@ public struct ModelProvider: Codable, Hashable, Sendable {
 public enum ModelProviderCredentials: Codable, Hashable, Sendable {
     case accessKey(AccessKeyPayload)
     case bearerToken(BearerTokenPayload)
+    case apiKey(ApiKeyPayload)
     /// Fallback for discriminator values this client does not know about yet.
     case unknown(AnyCodable)
 
@@ -6724,6 +6753,18 @@ public enum ModelProviderCredentials: Codable, Hashable, Sendable {
         }
     }
 
+    public struct ApiKeyPayload: Codable, Hashable, Sendable {
+        public let apiKey: String
+
+        private enum CodingKeys: String, CodingKey {
+            case apiKey = "apiKey"
+        }
+
+        public init(apiKey: String) {
+            self.apiKey = apiKey
+        }
+    }
+
     private enum DiscriminatorKey: String, CodingKey {
         case type
     }
@@ -6734,6 +6775,7 @@ public enum ModelProviderCredentials: Codable, Hashable, Sendable {
         switch discriminator {
         case "access-key": self = .accessKey(try AccessKeyPayload(from: decoder))
         case "bearer-token": self = .bearerToken(try BearerTokenPayload(from: decoder))
+        case "api-key": self = .apiKey(try ApiKeyPayload(from: decoder))
         default: self = .unknown(try AnyCodable(from: decoder))
         }
     }
@@ -6748,6 +6790,10 @@ public enum ModelProviderCredentials: Codable, Hashable, Sendable {
             var container = encoder.container(keyedBy: DiscriminatorKey.self)
             try container.encode("bearer-token", forKey: .type)
             try payload.encode(to: encoder)
+        case .apiKey(let payload):
+            var container = encoder.container(keyedBy: DiscriminatorKey.self)
+            try container.encode("api-key", forKey: .type)
+            try payload.encode(to: encoder)
         case .unknown(let value):
             try value.encode(to: encoder)
         }
@@ -6760,9 +6806,13 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
     public let owner: ResourceOwner
     public let kind: ModelProviderKind
     public let agents: [ModelProviderAgent]
-    public let region: String
+    /// Bedrock: required.
+    public let region: String?
+    /// LiteLLM: required.
+    public let baseUrl: String?
     public let models: ModelProviderModels?
     public let localAwsProfile: String?
+    public let localApiKeyEnv: String?
     public let podCredential: ModelProviderPodCredential?
     /// Replaces the stored pod credentials; null clears them; absent keeps them.
     public let credentials: ModelProviderCredentials?
@@ -6773,8 +6823,10 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         case kind = "kind"
         case agents = "agents"
         case region = "region"
+        case baseUrl = "baseUrl"
         case models = "models"
         case localAwsProfile = "localAwsProfile"
+        case localApiKeyEnv = "localApiKeyEnv"
         case podCredential = "podCredential"
         case credentials = "credentials"
     }
@@ -6784,9 +6836,11 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         owner: ResourceOwner,
         kind: ModelProviderKind,
         agents: [ModelProviderAgent],
-        region: String,
+        region: String? = nil,
+        baseUrl: String? = nil,
         models: ModelProviderModels? = nil,
         localAwsProfile: String? = nil,
+        localApiKeyEnv: String? = nil,
         podCredential: ModelProviderPodCredential? = nil,
         credentials: ModelProviderCredentials? = nil
     ) {
@@ -6795,8 +6849,10 @@ public struct CreateModelProviderInput: Codable, Hashable, Sendable {
         self.kind = kind
         self.agents = agents
         self.region = region
+        self.baseUrl = baseUrl
         self.models = models
         self.localAwsProfile = localAwsProfile
+        self.localApiKeyEnv = localApiKeyEnv
         self.podCredential = podCredential
         self.credentials = credentials
     }
@@ -6809,8 +6865,10 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
     public let owner: ResourceOwner?
     public let agents: [ModelProviderAgent]?
     public let region: String?
+    public let baseUrl: String?
     public let models: ModelProviderModels?
     public let localAwsProfile: String?
+    public let localApiKeyEnv: String?
     public let podCredential: ModelProviderPodCredential?
     /// Replaces the stored pod credentials; null clears them; absent keeps them.
     public let credentials: ModelProviderCredentials?
@@ -6820,8 +6878,10 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         case owner = "owner"
         case agents = "agents"
         case region = "region"
+        case baseUrl = "baseUrl"
         case models = "models"
         case localAwsProfile = "localAwsProfile"
+        case localApiKeyEnv = "localApiKeyEnv"
         case podCredential = "podCredential"
         case credentials = "credentials"
     }
@@ -6831,8 +6891,10 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         owner: ResourceOwner? = nil,
         agents: [ModelProviderAgent]? = nil,
         region: String? = nil,
+        baseUrl: String? = nil,
         models: ModelProviderModels? = nil,
         localAwsProfile: String? = nil,
+        localApiKeyEnv: String? = nil,
         podCredential: ModelProviderPodCredential? = nil,
         credentials: ModelProviderCredentials? = nil
     ) {
@@ -6840,22 +6902,31 @@ public struct UpdateModelProviderInput: Codable, Hashable, Sendable {
         self.owner = owner
         self.agents = agents
         self.region = region
+        self.baseUrl = baseUrl
         self.models = models
         self.localAwsProfile = localAwsProfile
+        self.localApiKeyEnv = localApiKeyEnv
         self.podCredential = podCredential
         self.credentials = credentials
     }
 }
 
 /// What a spawn on a machine carries to use a provider: never a credential,
-/// only where to call and which of the machine's AWS profiles to use.
+/// only where to call and where on the machine its credentials are.
 public struct ModelProviderLaunch: Codable, Hashable, Sendable {
     public let kind: ModelProviderKind
     public let providerId: String
     public let name: String
-    public let region: String
-    /// An AWS profile on the machine; absent = its default credentials.
+    /// Bedrock.
+    public let region: String?
+    /// Bedrock: an AWS profile on the machine; absent = its default credentials.
     public let awsProfile: String?
+    /// LiteLLM.
+    public let baseUrl: String?
+    /// LiteLLM: the machine env var holding its key; absent = the machine's own env.
+    public let apiKeyEnv: String?
+    /// LiteLLM: the picked model, for Claude Code's internal calls and context window.
+    public let model: ModelProviderModel?
 
     private enum CodingKeys: String, CodingKey {
         case kind = "kind"
@@ -6863,20 +6934,29 @@ public struct ModelProviderLaunch: Codable, Hashable, Sendable {
         case name = "name"
         case region = "region"
         case awsProfile = "awsProfile"
+        case baseUrl = "baseUrl"
+        case apiKeyEnv = "apiKeyEnv"
+        case model = "model"
     }
 
     public init(
         kind: ModelProviderKind,
         providerId: String,
         name: String,
-        region: String,
-        awsProfile: String? = nil
+        region: String? = nil,
+        awsProfile: String? = nil,
+        baseUrl: String? = nil,
+        apiKeyEnv: String? = nil,
+        model: ModelProviderModel? = nil
     ) {
         self.kind = kind
         self.providerId = providerId
         self.name = name
         self.region = region
         self.awsProfile = awsProfile
+        self.baseUrl = baseUrl
+        self.apiKeyEnv = apiKeyEnv
+        self.model = model
     }
 }
 
