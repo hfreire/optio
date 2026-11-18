@@ -6,6 +6,7 @@ import { workCredentialProfile } from "../services/pod-isolation.js";
 import {
   credentialRuntime,
   resolveCredentialForWork,
+  type CredentialRuntime,
 } from "../services/agent-credential-service.js";
 import { Worker, Queue } from "bullmq";
 import {
@@ -18,6 +19,9 @@ import {
   DEFAULT_MAX_TURNS_CODING,
   DEFAULT_MAX_TURNS_REVIEW,
   repoImageConfig,
+  type ClaudeAuthMode,
+  type CodexAuthMode,
+  type GeminiAuthMode,
   msUntilOffPeak,
   classifyError,
   parseRepoUrl,
@@ -343,22 +347,38 @@ export function startTaskWorker() {
         // Personal work runs with its owner's secrets; organization work never
         // sees anyone's (see services/work-ownership.ts).
         const runOwnerUserId = task.ownerUserId ?? null;
-        const claudeAuthMode =
+        // Per-run agent options (the New session form's Who parameters) win
+        // over the repo's defaults; anything unset falls through as before.
+        const agentOptions = ((task.metadata as any)?.agentOptions ?? {}) as Record<
+          string,
+          string | boolean | undefined
+        >;
+        const pickedCredential = await resolveCredentialForWork({
+          agentType: task.agentType,
+          agentOptions,
+          workspaceId: taskWorkspaceId,
+          ownerUserId: runOwnerUserId,
+          runsOn: "pod",
+        });
+        const credential = pickedCredential
+          ? credentialRuntime(task.agentType, pickedCredential)
+          : null;
+        const deploymentClaudeAuthMode =
           ((await retrieveSecretWithFallback(
             "CLAUDE_AUTH_MODE",
             "global",
             taskWorkspaceId,
             runOwnerUserId,
           ).catch(() => null)) as any) ?? "api-key";
-        const codexAuthMode =
+        const deploymentCodexAuthMode =
           ((await retrieveSecretWithFallback(
             "CODEX_AUTH_MODE",
             "global",
             taskWorkspaceId,
             runOwnerUserId,
           ).catch(() => null)) as any) ?? "api-key";
-        const codexAppServerUrl =
-          codexAuthMode === "app-server"
+        const deploymentCodexAppServerUrl =
+          deploymentCodexAuthMode === "app-server"
             ? (((await retrieveSecretWithFallback(
                 "CODEX_APP_SERVER_URL",
                 "global",
@@ -366,26 +386,40 @@ export function startTaskWorker() {
                 runOwnerUserId,
               ).catch(() => null)) as any) ?? undefined)
             : undefined;
-        const geminiAuthMode =
+        const deploymentGeminiAuthMode =
           ((await retrieveSecretWithFallback(
             "GEMINI_AUTH_MODE",
             "global",
             taskWorkspaceId,
             runOwnerUserId,
           ).catch(() => null)) as any) ?? "api-key";
+        const { claudeAuthMode, codexAuthMode, codexAppServerUrl, geminiAuthMode } = runAuthModes(
+          {
+            claudeAuthMode: deploymentClaudeAuthMode,
+            codexAuthMode: deploymentCodexAuthMode,
+            codexAppServerUrl: deploymentCodexAppServerUrl,
+            geminiAuthMode: deploymentGeminiAuthMode,
+          },
+          credential,
+        );
 
         // GCP config for Vertex AI — resolve per-agent so Claude's vertex config
         // does not bleed into Gemini tasks (and vice versa) when both are configured.
         const isClaudeVertex = task.agentType === "claude-code" && claudeAuthMode === "vertex-ai";
         const isGeminiVertex = task.agentType === "gemini" && geminiAuthMode === "vertex-ai";
         const needsGcpConfig = isClaudeVertex || isGeminiVertex;
+        const gcpProjectSecret = isClaudeVertex
+          ? "CLAUDE_VERTEX_PROJECT_ID"
+          : "GOOGLE_CLOUD_PROJECT";
         const googleCloudProject = needsGcpConfig
-          ? (((await retrieveSecretWithFallback(
-              isClaudeVertex ? "CLAUDE_VERTEX_PROJECT_ID" : "GOOGLE_CLOUD_PROJECT",
+          ? (credential?.env[gcpProjectSecret] ??
+            ((await retrieveSecretWithFallback(
+              gcpProjectSecret,
               "global",
               taskWorkspaceId,
               runOwnerUserId,
-            ).catch(() => null)) as any) ?? undefined)
+            ).catch(() => null)) as any) ??
+            undefined)
           : undefined;
         const googleCloudLocation = needsGcpConfig
           ? (((await retrieveSecretWithFallback(
@@ -474,12 +508,6 @@ export function startTaskWorker() {
         const finalRenderedPrompt = reviewOverride?.renderedPrompt ?? renderedPrompt;
         const finalTaskFileContent = reviewOverride?.taskFileContent ?? taskFileContent;
         const finalTaskFilePath = reviewOverride?.taskFilePath ?? taskFilePath;
-        // Per-run agent options (the New session form's Who parameters) win
-        // over the repo's defaults; anything unset falls through as before.
-        const agentOptions = ((task.metadata as any)?.agentOptions ?? {}) as Record<
-          string,
-          string | boolean | undefined
-        >;
         const runOpt = (key: string): string | undefined => {
           const v = agentOptions[key];
           return typeof v === "string" && v !== "" ? v : undefined;
@@ -516,7 +544,7 @@ export function startTaskWorker() {
           prompt: task.prompt,
           repoUrl: task.repoUrl,
           repoBranch: task.repoBranch,
-          claudeAuthMode: providerRuntime ? "bedrock" : claudeAuthMode,
+          claudeAuthMode: providerRuntime ? "bedrock" : (claudeAuthMode as ClaudeAuthMode),
           codexAuthMode: providerRuntime ? "bedrock" : codexAuthMode,
           codexAppServerUrl,
           modelProviderEnv: providerRuntime?.env,
@@ -576,7 +604,7 @@ export function startTaskWorker() {
         const gitToken = requiredGitTokenSecret(parsedRepo?.platform);
         const secretNames = [
           ...new Set([...agentConfig.requiredSecrets, ...(gitToken ? [gitToken] : [])]),
-        ];
+        ].filter((name) => !(credential && name in credential.env));
         const resolvedSecrets = await resolveSecretsForTask(
           secretNames,
           task.repoUrl,
@@ -584,13 +612,6 @@ export function startTaskWorker() {
           runOwnerUserId,
         );
         if (task.agentType === "pi") {
-          const pickedCredential = await resolveCredentialForWork({
-            agentType: task.agentType,
-            agentOptions,
-            workspaceId: taskWorkspaceId,
-            ownerUserId: runOwnerUserId,
-            runsOn: "pod",
-          });
           Object.assign(
             resolvedSecrets,
             await piProviderSecrets(
@@ -598,7 +619,7 @@ export function startTaskWorker() {
                 resolveSecretsForTask([name], task.repoUrl, taskWorkspaceId, runOwnerUserId)
                   .then((values) => values[name])
                   .catch(() => null),
-              pickedCredential ? credentialRuntime("pi", pickedCredential) : null,
+              credential,
             ),
           );
         }
@@ -663,7 +684,7 @@ export function startTaskWorker() {
         }
 
         // For oauth-token mode, read the token from the secrets store
-        if (task.agentType !== "pi" && claudeAuthMode === "oauth-token") {
+        if (task.agentType !== "pi" && claudeAuthMode === "oauth-token" && !credential) {
           // Pre-flight: check the cached validation from the background worker
           // to fail fast before wasting ~10s on pod provisioning + worktree setup
           try {
@@ -698,6 +719,8 @@ export function startTaskWorker() {
             );
           }
         }
+
+        if (credential) Object.assign(allEnv, credential.env);
 
         // The pod's own env (repo-init.sh): no run's secrets — the pod is shared.
         const podEnv = await repoPool.repoPodEnv(allEnv, task.repoUrl, taskWorkspaceId);
@@ -1746,6 +1769,30 @@ export function buildAgentCommand(
     default:
       return [`echo "Unknown agent type: ${agentType}" && exit 1`];
   }
+}
+
+interface RunAuthModes {
+  // The shared type has no "oauth-token": the adapter treats it as "nothing to require".
+  claudeAuthMode: ClaudeAuthMode | "oauth-token";
+  codexAuthMode: CodexAuthMode;
+  codexAppServerUrl?: string;
+  geminiAuthMode: GeminiAuthMode;
+}
+
+/** The sign-in modes a run uses: a credential picked for the work over the deployment's. */
+export function runAuthModes(
+  deployment: RunAuthModes,
+  credential: CredentialRuntime | null,
+): RunAuthModes {
+  if (!credential) return deployment;
+  return {
+    claudeAuthMode: credential.claudeAuthMode ?? deployment.claudeAuthMode,
+    codexAuthMode: credential.codexAuthMode ?? deployment.codexAuthMode,
+    codexAppServerUrl: credential.codexAuthMode
+      ? credential.codexAppServerUrl
+      : deployment.codexAppServerUrl,
+    geminiAuthMode: credential.geminiAuthMode ?? deployment.geminiAuthMode,
+  };
 }
 
 /**
