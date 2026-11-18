@@ -995,6 +995,13 @@
       "when": 1795100000000,
       "tag": "1795100000_model_provider_litellm",
       "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1795200000000,
+      "tag": "1795200000_repo_claude_model_provider",
+      "breakpoints": true
     }
   ]
 }

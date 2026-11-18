@@ -24,6 +24,7 @@ export interface RepoRecord {
   claudeContextWindow: string | null;
   claudeThinking: boolean;
   claudeEffort: string | null;
+  claudeModelProviderId: string | null;
   copilotModel: string | null;
   copilotEffort: string | null;
   opencodeModel: string | null;
@@ -205,6 +206,7 @@ export async function updateRepo(
     claudeContextWindow?: string;
     claudeThinking?: boolean;
     claudeEffort?: string;
+    claudeModelProviderId?: string | null;
     openclawModel?: string | null;
     openclawAgent?: string | null;
     maxTurnsCoding?: number;

@@ -7,16 +7,18 @@ import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { users, workspaceMembers, workspaces } from "../db/schema.js";
-import { insertWorkspace } from "../test-utils/integration/fixtures.js";
+import { repos, users, workspaceMembers, workspaces } from "../db/schema.js";
+import { insertRepo, insertWorkspace } from "../test-utils/integration/fixtures.js";
 import { foundingWorkspaceId } from "./founding-workspace.js";
 import {
   createModelProvider,
+  deleteModelProvider,
   discoverProviderModels,
   listModelProviders,
   podProviderRuntime,
   providerClaudeEffort,
   providerLaunch,
+  repoModelProviderError,
   resolveProviderForWork,
   updateModelProvider,
   ModelProviderError,
@@ -317,6 +319,41 @@ describe("model providers", () => {
         runsOn: "local",
       }),
     ).rejects.toBeInstanceOf(ModelProviderError);
+  });
+
+  it("lets a repo default to the organization's Claude Code providers only", async () => {
+    const pods = { podCredential: "ambient" };
+    const org = await createModelProvider(bedrock("workspace", pods), admin);
+    const mine = await createModelProvider(bedrock("me", pods), alice);
+    const machinesOnly = await createModelProvider(
+      bedrock("workspace", { name: "Laptop Bedrock" }),
+      admin,
+    );
+    const codexOnly = await createModelProvider(
+      bedrock("workspace", { ...pods, name: "Codex Bedrock", agents: ["codex"] }),
+      admin,
+    );
+    const elsewhere = await createModelProvider(bedrock("workspace", pods), {
+      ...admin,
+      workspaceId: (await insertWorkspace()).id,
+    });
+
+    expect(await repoModelProviderError(org.id, ws)).toBeNull();
+    expect(await repoModelProviderError(mine.id, ws)).toMatch(/someone's own/);
+    expect(await repoModelProviderError(machinesOnly.id, ws)).toMatch(/machines only/);
+    expect(await repoModelProviderError(codexOnly.id, ws)).toMatch(/isn't set up for claude-code/);
+    expect(await repoModelProviderError(elsewhere.id, ws)).toMatch(/removed/);
+    expect(await repoModelProviderError("00000000-0000-0000-0000-000000000000", ws)).toMatch(
+      /removed/,
+    );
+  });
+
+  it("clears a repo's default provider when the provider is deleted", async () => {
+    const org = await createModelProvider(bedrock("workspace"), admin);
+    const repo = await insertRepo({ workspaceId: ws, claudeModelProviderId: org.id });
+    await deleteModelProvider(org.id, admin);
+    const [after] = await db.select().from(repos).where(eq(repos.id, repo.id));
+    expect(after.claudeModelProviderId).toBeNull();
   });
 
   it("makes new work personal when it picks something personal, and checks org work", async () => {

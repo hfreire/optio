@@ -27,6 +27,8 @@ import {
   shellQuote,
   describeError,
   stripNul,
+  repoClaudeModelApplies,
+  withRepoModelProvider,
 } from "@optio/shared";
 import {
   getAdapter,
@@ -480,17 +482,23 @@ export function startTaskWorker() {
         const finalTaskFilePath = reviewOverride?.taskFilePath ?? taskFilePath;
         // Per-run agent options (the New session form's Who parameters) win
         // over the repo's defaults; anything unset falls through as before.
-        const agentOptions = ((task.metadata as any)?.agentOptions ?? {}) as Record<
-          string,
-          string | boolean | undefined
-        >;
+        const agentOptions = withRepoModelProvider(
+          task.agentType,
+          (task.metadata as any)?.agentOptions ?? {},
+          repoConfig?.claudeModelProviderId,
+        ) as Record<string, string | boolean | undefined>;
         const runOpt = (key: string): string | undefined => {
           const v = agentOptions[key];
           return typeof v === "string" && v !== "" ? v : undefined;
         };
+        const repoModelApplies = repoClaudeModelApplies(
+          reviewOverride ? {} : agentOptions,
+          repoConfig?.claudeModelProviderId,
+        );
         const opt = <K extends string>(key: K): string | undefined => {
           const v = runOpt(key);
           if (v) return v;
+          if (key === "claudeModel" && !repoModelApplies) return undefined;
           const fromRepo = (repoConfig as Record<string, unknown> | null | undefined)?.[key];
           return typeof fromRepo === "string" ? fromRepo : undefined;
         };

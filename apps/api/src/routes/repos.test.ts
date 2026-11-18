@@ -47,6 +47,11 @@ vi.mock("../services/github-repo-browse-service.js", () => ({
   browseGitHubRepos: (...args: unknown[]) => mockBrowse(...args),
 }));
 
+const mockRepoModelProviderError = vi.fn();
+vi.mock("../services/model-provider-service.js", () => ({
+  repoModelProviderError: (...args: unknown[]) => mockRepoModelProviderError(...args),
+}));
+
 const mockGetGitPlatformForRepo = vi.fn();
 vi.mock("../services/git-token-service.js", () => ({
   getGitPlatformForRepo: (...args: unknown[]) => mockGetGitPlatformForRepo(...args),
@@ -349,6 +354,89 @@ describe("PATCH /api/repos/:id", () => {
       "repo-1",
       expect.objectContaining({ imagePreset: "node" }),
     );
+  });
+
+  describe("default Claude Code model provider", () => {
+    const providerId = "11111111-1111-4111-8111-111111111111";
+
+    it("saves an organization provider the repo's workspace has", async () => {
+      mockGetRepo.mockResolvedValue(mockRepoData);
+      mockRepoModelProviderError.mockResolvedValue(null);
+      mockUpdateRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: providerId });
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: providerId },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRepoModelProviderError).toHaveBeenCalledWith(providerId, "ws-1");
+      expect(mockUpdateRepo).toHaveBeenCalledWith(
+        "repo-1",
+        expect.objectContaining({ claudeModelProviderId: providerId }),
+      );
+    });
+
+    it("refuses a provider the repo can't use, saying why", async () => {
+      mockGetRepo.mockResolvedValue(mockRepoData);
+      mockRepoModelProviderError.mockResolvedValue(
+        '"Mine" is someone\'s own model provider — only work they own can use it',
+      );
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: providerId },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/someone's own/);
+      expect(mockUpdateRepo).not.toHaveBeenCalled();
+    });
+
+    it("doesn't check the provider again when it isn't changing", async () => {
+      mockGetRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: providerId });
+      mockUpdateRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: providerId });
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: providerId, maxTurnsCoding: 100 },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRepoModelProviderError).not.toHaveBeenCalled();
+    });
+
+    it("clears it with null, unchecked", async () => {
+      mockGetRepo.mockResolvedValue(mockRepoData);
+      mockUpdateRepo.mockResolvedValue({ ...mockRepoData, claudeModelProviderId: null });
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: null },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRepoModelProviderError).not.toHaveBeenCalled();
+      expect(mockUpdateRepo).toHaveBeenCalledWith(
+        "repo-1",
+        expect.objectContaining({ claudeModelProviderId: null }),
+      );
+    });
+
+    it("refuses an id that isn't a uuid", async () => {
+      mockGetRepo.mockResolvedValue(mockRepoData);
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/repos/repo-1",
+        payload: { claudeModelProviderId: "nope" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(mockUpdateRepo).not.toHaveBeenCalled();
+    });
   });
 
   it("returns 404 for nonexistent repo", async () => {
