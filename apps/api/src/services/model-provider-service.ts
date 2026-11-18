@@ -12,6 +12,7 @@ import {
   modelProviderIdFrom,
   modelProviderKindAgents,
   modelProviderKindPodCredentials,
+  MODEL_PROVIDER_OPTION_KEY,
   normalizeProviderBaseUrl,
   providerModelContextWindow,
   providerRuntime,
@@ -526,6 +527,20 @@ export async function providerSelectionError(use: ProviderUse): Promise<string |
     if (err instanceof ModelProviderError) return err.message;
     throw err;
   }
+}
+
+/** Why a repo can't default Claude Code to the provider (null if it can): the organization's, for pods. */
+export async function repoModelProviderError(
+  providerId: string,
+  workspaceId: string | null | undefined,
+): Promise<string | null> {
+  return providerSelectionError({
+    agentType: "claude-code",
+    agentOptions: { [MODEL_PROVIDER_OPTION_KEY]: providerId },
+    workspaceId,
+    ownerUserId: null,
+    runsOn: "pod",
+  });
 }
 
 function pickedModel(

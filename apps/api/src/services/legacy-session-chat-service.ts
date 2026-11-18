@@ -1,6 +1,6 @@
 import { getAdapter } from "@optio/agent-adapters";
 import type { AgentResult, AgentLogEntry, ExecSession } from "@optio/shared";
-import { shellQuote } from "@optio/shared";
+import { repoClaudeModelApplies, shellQuote } from "@optio/shared";
 import {
   claimSessionTurn,
   finishSessionTurn,
@@ -61,7 +61,10 @@ export async function createLegacySessionChat(
   const optioSettings = await getSettings(session.workspaceId);
 
   // Optio settings take precedence, then repo config, then default
-  let currentModel = optioSettings.model || repoConfig?.claudeModel || "sonnet";
+  const repoModel = repoClaudeModelApplies({}, repoConfig?.claudeModelProviderId)
+    ? repoConfig?.claudeModel
+    : undefined;
+  let currentModel = optioSettings.model || repoModel || "sonnet";
 
   const rt = getRuntime();
   const handle = { id: pod.podId ?? pod.podName, name: pod.podName };
