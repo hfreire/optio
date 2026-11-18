@@ -129,7 +129,10 @@ repository with the deployment's token:
   (`gitlab-pr-facts.ts`), at most 40 MRs per project.
 - **CodeCommit**: the plain list; no checks, reviews or threads.
 
-Each repository's answer is cached for 60 seconds per API instance. Any GitHub
-or GitLab webhook delivery for the repository drops it, and **Refresh** re-reads
-anything older than 10 seconds. A repository that can't be read is named on
+Each repository's answer is cached for 60 seconds per API instance. After that,
+and for up to 10 minutes, the page is answered from the cache at once while the
+repository is re-read in the background, so the next load shows the change; a
+failed re-read keeps the cached answer. Any GitHub or GitLab webhook delivery for
+the repository drops it, and **Refresh** waits for a re-read of anything older
+than 10 seconds. A repository that can't be read is named on
 the page with the reason; the rest still show.
