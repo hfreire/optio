@@ -30,6 +30,20 @@ final class WorkFormProvidersTests: XCTestCase {
         XCTAssertTrue(F.usableProviders(list, runtime: "gemini").isEmpty)
     }
 
+    func testLiteLLMProviderIsPickableAndLabelledByUrl() {
+        let litellm = ModelProvider(
+            id: "l", kind: .litellm, name: "Proxy", agents: [.claudeCode], region: nil, baseUrl: "http://litellm.ai:4000",
+            models: ModelProviderModels(claudeCode: [ModelProviderModel(id: "local-coder")]),
+            podCredential: .apiKey, hasPodCredentials: true, mine: false, canEdit: true, createdAt: "", updatedAt: ""
+        )
+        XCTAssertEqual(F.usableProviders([litellm], runtime: "claude-code").map(\.id), ["l"])
+        XCTAssertTrue(F.usableProviders([litellm], runtime: "codex").isEmpty)
+        XCTAssertEqual(F.kindLabel(litellm), "LiteLLM")
+        XCTAssertEqual(F.location(litellm), "http://litellm.ai:4000")
+        XCTAssertEqual(F.podCredentialLabel(.apiKey), "API key")
+        XCTAssertEqual(F.pickProvider(F.Draft.empty, litellm).agentOptions["claudeModel"]?.stringValue, "local-coder")
+    }
+
     func testPickProviderSwapsModelAndOwner() {
         var d = F.Draft.empty
         d = F.pickProvider(d, provider("mine", owner: "me", mine: true))

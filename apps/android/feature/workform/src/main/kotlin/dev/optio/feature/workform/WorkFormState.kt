@@ -15,6 +15,7 @@ import dev.optio.core.network.createPickableSecret
 import dev.optio.core.network.listModelProviders
 import dev.optio.core.network.getWorkDefaults
 import dev.optio.core.network.isOrganization
+import dev.optio.core.network.kindLabel
 import dev.optio.core.network.putWorkDefaults
 import dev.optio.core.model.WorkFormDefaults
 import kotlinx.coroutines.Dispatchers
@@ -836,7 +837,7 @@ class WorkFormState(
             "Terminal"
         } else {
             runtimeLabel(draft.runtime) + modelLabel.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty() +
-                (if (pickedProviderId(draft) != null) " · Bedrock" else "")
+                pickedProvider?.let { " · ${it.kindLabel}" }.orEmpty()
         }
 
     val summaryThen: String
