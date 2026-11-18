@@ -2,7 +2,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { getAdapter } from "@optio/agent-adapters";
-import { DEFAULT_MAX_TURNS_CODING, getProviderCatalog, providerForAgentType } from "@optio/shared";
+import {
+  DEFAULT_MAX_TURNS_CODING,
+  getProviderCatalog,
+  providerForAgentType,
+  repoImageConfig,
+} from "@optio/shared";
 import { STDIN_EOF_SENTINEL } from "@optio/container-runtime";
 import { db } from "../db/client.js";
 import { interactiveSessions, repos } from "../db/schema.js";
@@ -245,9 +250,7 @@ export async function runHarnessSession(
       ownerUserId: session.userId,
       credentialProfile: { runtime, options: session.agentOptions },
       maxAgentsPerPod: 1,
-      imageConfig: repo?.imagePreset
-        ? { preset: repo.imagePreset as import("@optio/shared").PresetImageId }
-        : undefined,
+      imageConfig: repo?.customImage || repo?.imagePreset ? repoImageConfig(repo) : undefined,
     });
     await acquireSlot(pod.id);
     podId = pod.id;
