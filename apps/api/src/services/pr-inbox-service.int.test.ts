@@ -10,6 +10,7 @@ import { parseRepoUrl, type PrFacts } from "@optio/shared";
 import { db } from "../db/client.js";
 import { prReviews, taskPrs, tasks, users } from "../db/schema.js";
 import { insertRepo, insertTask, insertWorkspace } from "../test-utils/integration/fixtures.js";
+import { prFactsCache } from "./pr-inbox-cache.js";
 
 const fetchFacts = vi.fn<(...a: unknown[]) => Promise<PrFacts[]>>();
 vi.mock("./git-platform/github-pr-facts.js", () => ({
@@ -73,6 +74,10 @@ async function insertUser(over: Partial<typeof users.$inferInsert> = {}) {
     })
     .returning();
   return u;
+}
+
+function age(ms: number) {
+  for (const entry of prFactsCache.values()) entry.at -= ms;
 }
 
 describe("pr-inbox-service", () => {
@@ -178,6 +183,74 @@ describe("pr-inbox-service", () => {
     inbox.invalidatePrInboxRepo("https://github.com/acme/app.git");
     await inbox.getPrInbox({ workspaceId: ws.id, userId: me.id });
     expect(fetchFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves stale facts at once and refreshes them in the background", async () => {
+    const ws = await insertWorkspace();
+    await insertRepo({
+      workspaceId: ws.id,
+      repoUrl: "https://github.com/acme/app",
+      fullName: "acme/app",
+    });
+    fetchFacts.mockResolvedValueOnce([facts("https://github.com/acme/app/pull/1")]);
+    await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+    age(61_000);
+
+    let release!: (f: PrFacts[]) => void;
+    fetchFacts.mockReturnValueOnce(new Promise((r) => (release = r)));
+    const stale = await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+    expect(stale.items.map((i) => i.facts.number)).toEqual([1]);
+    expect(fetchFacts).toHaveBeenCalledTimes(2);
+
+    release([
+      facts("https://github.com/acme/app/pull/1"),
+      facts("https://github.com/acme/app/pull/2"),
+    ]);
+    await vi.waitFor(async () => {
+      const res = await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+      expect(res.items).toHaveLength(2);
+    });
+    expect(fetchFacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the stale facts when the background refresh fails", async () => {
+    const ws = await insertWorkspace();
+    await insertRepo({
+      workspaceId: ws.id,
+      repoUrl: "https://github.com/acme/app",
+      fullName: "acme/app",
+    });
+    fetchFacts.mockResolvedValueOnce([facts("https://github.com/acme/app/pull/1")]);
+    await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+    age(61_000);
+
+    fetchFacts.mockRejectedValueOnce(new Error("GitHub API error 502"));
+    const res = await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+    expect(res.items).toHaveLength(1);
+    expect(res.errors).toEqual([]);
+    await vi.waitFor(() => expect(fetchFacts).toHaveBeenCalledTimes(2));
+    expect(prFactsCache.size).toBe(1);
+  });
+
+  it("waits for the platform when the cached facts are too old or a refresh is asked for", async () => {
+    const ws = await insertWorkspace();
+    await insertRepo({
+      workspaceId: ws.id,
+      repoUrl: "https://github.com/acme/app",
+      fullName: "acme/app",
+    });
+    fetchFacts.mockResolvedValueOnce([facts("https://github.com/acme/app/pull/1")]);
+    await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+
+    age(11 * 60_000);
+    fetchFacts.mockResolvedValueOnce([facts("https://github.com/acme/app/pull/2")]);
+    const old = await inbox.getPrInbox({ workspaceId: ws.id, userId: null });
+    expect(old.items.map((i) => i.facts.number)).toEqual([2]);
+
+    age(61_000);
+    fetchFacts.mockResolvedValueOnce([facts("https://github.com/acme/app/pull/3")]);
+    const refreshed = await inbox.getPrInbox({ workspaceId: ws.id, userId: null, refresh: true });
+    expect(refreshed.items.map((i) => i.facts.number)).toEqual([3]);
   });
 
   it("reports a repository it can't read and keeps the rest", async () => {
