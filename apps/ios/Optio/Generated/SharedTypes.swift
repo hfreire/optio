@@ -6508,6 +6508,131 @@ public struct UpdateInstalledSkillInput: Codable, Hashable, Sendable {
     }
 }
 
+/// A git repo laid out like `~/.claude`, synced and written to
+/// `/home/agent/.claude` in Claude Code pods. `repoUrl` null is the
+/// workspace's; a repo's own replaces it for that repo.
+public struct ClaudeConfigSource: Codable, Hashable, Sendable {
+    public let id: String
+    public let workspaceId: String?
+    public let repoUrl: String?
+    public let sourceUrl: String
+    public let ref: String
+    public let subpath: String
+    public let resolvedSha: String?
+    public let enabled: Bool
+    public let lastSyncedAt: Date?
+    public let lastSyncError: String?
+    public let fileCount: Double?
+    public let totalSizeBytes: Double?
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id = "id"
+        case workspaceId = "workspaceId"
+        case repoUrl = "repoUrl"
+        case sourceUrl = "sourceUrl"
+        case ref = "ref"
+        case subpath = "subpath"
+        case resolvedSha = "resolvedSha"
+        case enabled = "enabled"
+        case lastSyncedAt = "lastSyncedAt"
+        case lastSyncError = "lastSyncError"
+        case fileCount = "fileCount"
+        case totalSizeBytes = "totalSizeBytes"
+        case createdAt = "createdAt"
+        case updatedAt = "updatedAt"
+    }
+
+    public init(
+        id: String,
+        workspaceId: String? = nil,
+        repoUrl: String? = nil,
+        sourceUrl: String,
+        ref: String,
+        subpath: String,
+        resolvedSha: String? = nil,
+        enabled: Bool,
+        lastSyncedAt: Date? = nil,
+        lastSyncError: String? = nil,
+        fileCount: Double? = nil,
+        totalSizeBytes: Double? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.workspaceId = workspaceId
+        self.repoUrl = repoUrl
+        self.sourceUrl = sourceUrl
+        self.ref = ref
+        self.subpath = subpath
+        self.resolvedSha = resolvedSha
+        self.enabled = enabled
+        self.lastSyncedAt = lastSyncedAt
+        self.lastSyncError = lastSyncError
+        self.fileCount = fileCount
+        self.totalSizeBytes = totalSizeBytes
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct CreateClaudeConfigSourceInput: Codable, Hashable, Sendable {
+    public let sourceUrl: String
+    public let ref: String?
+    public let subpath: String?
+    public let repoUrl: String?
+    public let enabled: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceUrl = "sourceUrl"
+        case ref = "ref"
+        case subpath = "subpath"
+        case repoUrl = "repoUrl"
+        case enabled = "enabled"
+    }
+
+    public init(
+        sourceUrl: String,
+        ref: String? = nil,
+        subpath: String? = nil,
+        repoUrl: String? = nil,
+        enabled: Bool? = nil
+    ) {
+        self.sourceUrl = sourceUrl
+        self.ref = ref
+        self.subpath = subpath
+        self.repoUrl = repoUrl
+        self.enabled = enabled
+    }
+}
+
+public struct UpdateClaudeConfigSourceInput: Codable, Hashable, Sendable {
+    public let sourceUrl: String?
+    public let ref: String?
+    public let subpath: String?
+    public let enabled: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceUrl = "sourceUrl"
+        case ref = "ref"
+        case subpath = "subpath"
+        case enabled = "enabled"
+    }
+
+    public init(
+        sourceUrl: String? = nil,
+        ref: String? = nil,
+        subpath: String? = nil,
+        enabled: Bool? = nil
+    ) {
+        self.sourceUrl = sourceUrl
+        self.ref = ref
+        self.subpath = subpath
+        self.enabled = enabled
+    }
+}
+
 // MARK: - model-provider.ts
 
 public enum ModelProviderKind: String, Codable, Hashable, Sendable, CaseIterable {
