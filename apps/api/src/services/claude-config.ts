@@ -7,8 +7,8 @@ import type { AgentContainerConfig } from "@optio/shared";
 
 type SetupFile = NonNullable<AgentContainerConfig["setupFiles"]>[number];
 
-export const CLAUDE_HOME = "/home/agent/.claude";
-export const CLAUDE_SETTINGS_PATH = `${CLAUDE_HOME}/settings.json`;
+const CLAUDE_HOME = "/home/agent/.claude";
+const CLAUDE_SETTINGS_PATH = `${CLAUDE_HOME}/settings.json`;
 export const CLAUDE_CONFIG_REPORT_ENV = "OPTIO_CLAUDE_CONFIG_REPORT";
 
 export interface ClaudeConfigFile {

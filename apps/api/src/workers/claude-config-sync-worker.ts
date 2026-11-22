@@ -38,7 +38,7 @@ const SYNC_INTERVAL_MS = parseIntEnv("OPTIO_CLAUDE_CONFIG_SYNC_INTERVAL", 300_00
 /** The same cap installed skills have; the files ride in OPTIO_SETUP_FILES. */
 const MAX_CONFIG_BYTES = parseIntEnv("OPTIO_CLAUDE_CONFIG_MAX_BYTES", 1_048_576);
 
-export const CLAUDE_CONFIG_SYNC_JOB_OPTIONS = {
+const CLAUDE_CONFIG_SYNC_JOB_OPTIONS = {
   attempts: 8,
   backoff: { type: "exponential", delay: 5_000 },
 } as const;
@@ -49,17 +49,14 @@ const claudeConfigSyncQueue = new Queue("claude-config-sync", {
 });
 
 /** A sync-one found its source's lease held: retried by BullMQ with backoff. */
-export class ClaudeConfigSyncBusyError extends Error {
+class ClaudeConfigSyncBusyError extends Error {
   constructor(public readonly sourceId: string) {
     super(`Claude config source ${sourceId} is being synced by another instance; retrying`);
     this.name = "ClaudeConfigSyncBusyError";
   }
 }
 
-export async function processClaudeConfigSyncJob(job: {
-  name: string;
-  data: unknown;
-}): Promise<void> {
+async function processClaudeConfigSyncJob(job: { name: string; data: unknown }): Promise<void> {
   if (job.name === "sync-due") {
     await underPollerLease("claude-config-sync", async () => {
       for (const id of await dueClaudeConfigIds()) await enqueueClaudeConfigSync(id);
