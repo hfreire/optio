@@ -20,6 +20,7 @@ import {
   buildPooledStartScript,
   CHECKOUT_REPO,
   PRUNE_CLAUDE_CONFIG,
+  REPORT_CLAUDE_CONFIG,
   gitBotEnv,
   gitBotIdentity,
   deliverStdinScript,
@@ -82,6 +83,15 @@ describe("buildEnvExports", () => {
     expect(buildEnvExports({ A: "1", OPTIO_SETUP_FILES: "e30=" })).toEqual([
       "export A='1'",
       "export -n OPTIO_SETUP_FILES='e30='",
+    ]);
+  });
+
+  it("assigns the config repo's manifest and report without exporting them", () => {
+    expect(
+      buildEnvExports({ OPTIO_CLAUDE_CONFIG_MANIFEST: "e30=", OPTIO_CLAUDE_CONFIG_REPORT: "e30=" }),
+    ).toEqual([
+      "export -n OPTIO_CLAUDE_CONFIG_MANIFEST='e30='",
+      "export -n OPTIO_CLAUDE_CONFIG_REPORT='e30='",
     ]);
   });
 
@@ -674,6 +684,14 @@ describe("PRUNE_CLAUDE_CONFIG", () => {
     expect(existsSync(home)).toBe(true);
   });
 
+  it("removes a settings.json the manifest lists (written by Optio, not an adapter)", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    mk(home, "settings.json");
+    writeFileSync(manifest(home), JSON.stringify(["settings.json"]));
+    run(home, []);
+    expect(existsSync(join(home, "settings.json"))).toBe(false);
+  });
+
   it("never follows a manifest path out of ~/.claude or onto its own state", () => {
     const home = mkdtempSync(join(tmpdir(), "claude-home-"));
     const outside = join(mkdtempSync(join(tmpdir(), "outside-")), "victim");
@@ -681,13 +699,14 @@ describe("PRUNE_CLAUDE_CONFIG", () => {
     mk(home, "settings.json");
     writeFileSync(
       manifest(home),
-      JSON.stringify([outside, "../victim", "settings.json", ".optio-config-manifest", 7]),
+      JSON.stringify([outside, "../victim", ".optio-config-manifest", 7]),
     );
 
     run(home, []);
 
     expect(existsSync(outside)).toBe(true);
     expect(existsSync(join(home, "settings.json"))).toBe(true);
+    expect(existsSync(manifest(home))).toBe(false);
   });
 
   it("writes the first manifest and tolerates a corrupt one", () => {
@@ -705,5 +724,41 @@ describe("PRUNE_CLAUDE_CONFIG", () => {
     writeFileSync(manifest(home), JSON.stringify(["CLAUDE.md"]));
     run(home, null);
     expect(existsSync(join(home, "CLAUDE.md"))).toBe(true);
+  });
+});
+
+describe("REPORT_CLAUDE_CONFIG", () => {
+  const report = (payload: unknown, path = process.env.PATH ?? "") =>
+    execFileSync("bash", ["-c", REPORT_CLAUDE_CONFIG.join("\n")], {
+      env: {
+        ...process.env,
+        PATH: path,
+        OPTIO_CLAUDE_CONFIG_REPORT: Buffer.from(JSON.stringify(payload)).toString("base64"),
+      },
+    }).toString();
+
+  it("logs the notes and each hook executable that is not in the pod", () => {
+    const out = report({
+      notes: ["Warning: skill 'x' skipped"],
+      executables: [
+        { event: "Stop", exe: "optio-no-such-tool" },
+        { event: "Stop", exe: "~/.claude/hooks/none.sh" },
+        { event: "Stop", exe: "ls" },
+        { event: "Stop", exe: "$UNSET/x" },
+      ],
+    });
+    expect(out).toContain("[optio] Warning: skill 'x' skipped");
+    expect(out).toContain("Stop hook runs optio-no-such-tool, which is not in this pod");
+    expect(out).toContain("Stop hook runs ~/.claude/hooks/none.sh, which is not in this pod");
+    expect(out).not.toContain("runs ls");
+    expect(out).not.toContain("$UNSET");
+  });
+
+  it("prints nothing without a report", () => {
+    expect(
+      execFileSync("bash", ["-c", REPORT_CLAUDE_CONFIG.join("\n")], {
+        env: { ...process.env, OPTIO_CLAUDE_CONFIG_REPORT: "" },
+      }).toString(),
+    ).toBe("");
   });
 });

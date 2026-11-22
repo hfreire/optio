@@ -4,10 +4,11 @@ import { claudeConfigFiles, claudeConfigSources } from "../db/schema.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
 import { normalizeSubpath } from "./installed-skill-service.js";
 import { selectClaudeConfigSource, type ClaudeConfigFile } from "./claude-config.js";
-import type {
-  ClaudeConfigSource,
-  CreateClaudeConfigSourceInput,
-  UpdateClaudeConfigSourceInput,
+import {
+  normalizeRepoUrl,
+  type ClaudeConfigSource,
+  type CreateClaudeConfigSourceInput,
+  type UpdateClaudeConfigSourceInput,
 } from "@optio/shared";
 
 const DEFAULT_REF = "main";
@@ -17,6 +18,22 @@ export class ClaudeConfigScopeTakenError extends Error {
   constructor() {
     super("This scope already has a Claude config repo; update or delete it instead");
     this.name = "ClaudeConfigScopeTakenError";
+  }
+}
+
+/** The input names something no source can have (a subpath that leaves the repo). */
+export class ClaudeConfigInvalidInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaudeConfigInvalidInputError";
+  }
+}
+
+function subpathOf(raw: string | undefined): string {
+  try {
+    return normalizeSubpath(raw);
+  } catch (err) {
+    throw new ClaudeConfigInvalidInputError(err instanceof Error ? err.message : "invalid subpath");
   }
 }
 
@@ -54,10 +71,10 @@ export async function createClaudeConfigSource(
       .insert(claudeConfigSources)
       .values({
         workspaceId: workspaceId ?? null,
-        repoUrl: input.repoUrl?.trim() || null,
+        repoUrl: input.repoUrl?.trim() ? normalizeRepoUrl(input.repoUrl.trim()) : null,
         sourceUrl: input.sourceUrl,
         ref: input.ref?.trim() || DEFAULT_REF,
-        subpath: normalizeSubpath(input.subpath),
+        subpath: subpathOf(input.subpath),
         enabled: input.enabled ?? true,
       })
       .returning();
@@ -71,12 +88,12 @@ export async function createClaudeConfigSource(
 export async function updateClaudeConfigSource(
   id: string,
   input: UpdateClaudeConfigSourceInput,
-): Promise<ClaudeConfigSource> {
+): Promise<ClaudeConfigSource | null> {
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.enabled !== undefined) updates.enabled = input.enabled;
   if (input.sourceUrl !== undefined) updates.sourceUrl = input.sourceUrl;
   if (input.ref !== undefined) updates.ref = input.ref.trim() || DEFAULT_REF;
-  if (input.subpath !== undefined) updates.subpath = normalizeSubpath(input.subpath);
+  if (input.subpath !== undefined) updates.subpath = subpathOf(input.subpath);
   // The change invalidates the resolved commit in the same statement, so the
   // source is due at once and a sync of the old one still in flight records nothing.
   if (input.sourceUrl !== undefined || input.ref !== undefined || input.subpath !== undefined) {
@@ -88,7 +105,7 @@ export async function updateClaudeConfigSource(
     .set(updates)
     .where(eq(claudeConfigSources.id, id))
     .returning();
-  return mapRow(row);
+  return row ? mapRow(row) : null;
 }
 
 export async function deleteClaudeConfigSource(id: string): Promise<void> {

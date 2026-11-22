@@ -536,14 +536,14 @@ describe("environmentOptions", () => {
       content: JSON.stringify({ hasCompletedOnboarding: true, model: "opus", env: { A: "1" } }),
     };
 
-    async function synced(workspaceId: string, repoUrl?: string) {
+    async function synced(workspaceId: string, repoUrl?: string, files = configFiles) {
       const row = await createClaudeConfigSource(
         { sourceUrl: "https://github.com/acme/dotclaude", repoUrl },
         workspaceId,
       );
       await recordClaudeConfigSync(
         row.id,
-        { ok: true, resolvedSha: "b".repeat(40), totalSizeBytes: 1, files: configFiles },
+        { ok: true, resolvedSha: "b".repeat(40), totalSizeBytes: 1, files },
         { sourceUrl: row.sourceUrl, ref: row.ref, subpath: row.subpath },
       );
       return row;
@@ -623,17 +623,31 @@ describe("environmentOptions", () => {
       expect(report.executables).toEqual([{ event: "Stop", exe: "optio-missing-tool" }]);
     });
 
-    it("prefers the repo's source over the workspace's, and skips other agents and controller-only work", async () => {
+    it("prefers the repo's source over the workspace's", async () => {
       const w = await world();
       await synced(w.ws.id);
-      const repoRow = await synced(w.ws.id, w.repoUrl);
+      const repoFiles = [{ ...configFiles[0], relativePath: "REPO.md" }];
+      const repoRow = await synced(w.ws.id, w.repoUrl, repoFiles);
       expect(repoRow.repoUrl).toBe(w.repoUrl);
       const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
-      expect(env.OPTIO_CLAUDE_CONFIG_REPORT).toBeDefined();
+      expect(manifestOf(env)).toEqual(["REPO.md"]);
+    });
 
+    it("skips other agents and controller-only work", async () => {
+      const w = await world();
+      await synced(w.ws.id);
       const codex = await buildAgentEnvironment(input(w, "codex"), logger, []);
       expect(codex.OPTIO_CLAUDE_CONFIG_REPORT).toBeUndefined();
       expect(filesOf(codex).some((f) => f.path.startsWith("/home/agent/.claude/"))).toBe(false);
+      const controller = await buildAgentEnvironment(
+        { ...input(w), controllerOnly: true },
+        logger,
+        [],
+      );
+      expect(controller.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
+      expect(filesOf(controller).some((f) => f.path.startsWith("/home/agent/.claude/"))).toBe(
+        false,
+      );
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   claudeConfigManifestEnv,
   claudeConfigReport,
   hookExecutables,
+  isAuthEnvKey,
   mapClaudeConfigFiles,
   mergeClaudeSettings,
   selectClaudeConfigSource,
@@ -252,9 +253,14 @@ describe("selectClaudeConfigSource", () => {
 });
 
 describe("applyClaudeConfig manifest", () => {
-  it("lists the injected paths, relative to ~/.claude and without settings.json", () => {
+  it("lists settings.json when Optio writes it itself, so a later run can remove it", () => {
+    const out = applyClaudeConfig([], [file("settings.json", "{}")], new Set(), () => false);
+    expect(out.manifest).toEqual(["settings.json"]);
+  });
+
+  it("lists the injected paths, relative to ~/.claude and without an adapter's settings.json", () => {
     const out = applyClaudeConfig(
-      [],
+      [{ path: "/home/agent/.claude/settings.json", content: "{}" }],
       [
         file("CLAUDE.md"),
         file("skills/tdd/SKILL.md"),
@@ -344,5 +350,78 @@ describe("applyClaudeConfig", () => {
     const report = JSON.parse(Buffer.from(out.report!, "base64").toString());
     expect(report.executables).toEqual([{ event: "Stop", exe: "terminal-notifier" }]);
     expect(report.notes).toHaveLength(1);
+  });
+});
+
+describe("settings Optio keeps for itself", () => {
+  const none = () => false;
+
+  it("drops credential-routing keys from the config", () => {
+    const merged = mergeClaudeSettings(
+      { hasCompletedOnboarding: true },
+      {
+        apiKeyHelper: "curl evil",
+        awsAuthRefresh: "x",
+        awsCredentialExport: "x",
+        otelHeadersHelper: "x",
+        forceLoginMethod: "console",
+        forceLoginOrgUUID: "x",
+        theme: "dark",
+      },
+      none,
+    );
+    expect(merged).toEqual({ hasCompletedOnboarding: true, theme: "dark" });
+  });
+
+  it.each([
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_PROFILE",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "NODE_OPTIONS",
+    "GOOGLE_CLOUD_PROJECT",
+  ])("treats %s as an auth or routing key", (key) => {
+    expect(isAuthEnvKey(key)).toBe(true);
+  });
+
+  it("leaves ordinary env alone", () => {
+    expect(isAuthEnvKey("MY_FLAG")).toBe(false);
+  });
+});
+
+describe("mapClaudeConfigFiles state files", () => {
+  it("never injects the prune manifest from the repo", () => {
+    const out = mapClaudeConfigFiles(
+      [file(".optio-config-manifest"), file("a/.optio-config-manifest"), file("CLAUDE.md")],
+      new Set(),
+    );
+    expect(out.setupFiles.map((f) => f.path)).toEqual([
+      "/home/agent/.claude/a/.optio-config-manifest",
+      "/home/agent/.claude/CLAUDE.md",
+    ]);
+  });
+});
+
+describe("selectClaudeConfigSource scoping", () => {
+  const src = (id: string, repoUrl: string | null, workspaceId: string | null) => ({
+    id,
+    repoUrl,
+    workspaceId,
+  });
+
+  it("matches a repo override however the URL is spelled", () => {
+    const rows = [src("repo", "https://github.com/Acme/App.git/", "w")];
+    expect(selectClaudeConfigSource(rows, "git@github.com:acme/app.git", "w")?.id).toBe("repo");
+    expect(selectClaudeConfigSource(rows, "https://github.com/acme/other", "w")).toBeNull();
+  });
+
+  it("gives a run with no workspace only the deployment-wide source", () => {
+    const rows = [src("tenant", null, "w"), src("global", null, null)];
+    expect(selectClaudeConfigSource(rows, null, null)?.id).toBe("global");
+    expect(selectClaudeConfigSource(rows.slice(0, 1), null, null)).toBeNull();
   });
 });

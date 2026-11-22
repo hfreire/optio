@@ -11,8 +11,10 @@ const mockEnqueue = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../services/claude-config-service.js", () => {
   class ClaudeConfigScopeTakenError extends Error {}
+  class ClaudeConfigInvalidInputError extends Error {}
   return {
     ClaudeConfigScopeTakenError,
+    ClaudeConfigInvalidInputError,
     listClaudeConfigSources: (...a: unknown[]) => mockList(...a),
     getClaudeConfigSource: (...a: unknown[]) => mockGet(...a),
     createClaudeConfigSource: (...a: unknown[]) => mockCreate(...a),
@@ -25,7 +27,10 @@ vi.mock("../workers/claude-config-sync-worker.js", () => ({
   enqueueClaudeConfigSync: (id: string) => mockEnqueue(id),
 }));
 
-import { ClaudeConfigScopeTakenError } from "../services/claude-config-service.js";
+import {
+  ClaudeConfigInvalidInputError,
+  ClaudeConfigScopeTakenError,
+} from "../services/claude-config-service.js";
 import { claudeConfigRoutes } from "./claude-config.js";
 
 const row = (over: Record<string, unknown> = {}) => ({
@@ -123,5 +128,66 @@ describe("claude config routes", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(mockUpdate).toHaveBeenCalledWith("c1", expect.objectContaining({ ref: "dev" }));
+  });
+
+  it.each([
+    [{ ref: "dev" }, true],
+    [{ sourceUrl: "https://github.com/acme/other.git" }, true],
+    [{ subpath: "home" }, true],
+    [{ enabled: true }, true],
+    [{ enabled: false }, false],
+  ])("PATCH %j enqueues a sync: %s", async (payload, enqueues) => {
+    mockGet.mockResolvedValue(row());
+    mockUpdate.mockResolvedValue(row());
+    const res = await app.inject({ method: "PATCH", url: "/api/claude-config/c1", payload });
+    expect(res.statusCode).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledTimes(enqueues ? 1 : 0);
+  });
+
+  it("maps errors: bad input 400, a source deleted meanwhile 404, anything else 500", async () => {
+    mockCreate.mockRejectedValueOnce(new ClaudeConfigInvalidInputError("invalid subpath: ../x"));
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/claude-config",
+      payload: { sourceUrl: "https://github.com/acme/d.git", subpath: "../x" },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toBe("invalid subpath: ../x");
+
+    mockCreate.mockRejectedValueOnce(new Error("connect ECONNREFUSED 10.0.0.5:5432"));
+    const boom = await app.inject({
+      method: "POST",
+      url: "/api/claude-config",
+      payload: { sourceUrl: "https://github.com/acme/d.git" },
+    });
+    expect(boom.statusCode).toBe(500);
+    expect(boom.body).not.toContain("10.0.0.5");
+
+    mockGet.mockResolvedValue(row());
+    mockUpdate.mockResolvedValue(null);
+    const gone = await app.inject({
+      method: "PATCH",
+      url: "/api/claude-config/c1",
+      payload: { ref: "dev" },
+    });
+    expect(gone.statusCode).toBe(404);
+  });
+
+  it("keeps a deployment-wide source read-only for a workspace's admin", async () => {
+    mockGet.mockResolvedValue(row({ workspaceId: null }));
+    expect((await app.inject({ method: "GET", url: "/api/claude-config/c1" })).statusCode).toBe(
+      200,
+    );
+    for (const [method, url, payload] of [
+      ["PATCH", "/api/claude-config/c1", { enabled: false }],
+      ["DELETE", "/api/claude-config/c1", undefined],
+      ["POST", "/api/claude-config/c1/sync", undefined],
+    ] as const) {
+      const res = await app.inject({ method, url, payload });
+      expect(res.statusCode).toBe(404);
+    }
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
   });
 });

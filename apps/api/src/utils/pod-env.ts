@@ -85,7 +85,11 @@ export function isReservedPodEnvName(name: string): boolean {
  * agent) failed with "Argument list too long". Their one reader is
  * `WRITE_SETUP_FILES`, in the script's own shell.
  */
-const SHELL_ONLY_ENV_NAMES: ReadonlySet<string> = new Set(["OPTIO_SETUP_FILES"]);
+const SHELL_ONLY_ENV_NAMES: ReadonlySet<string> = new Set([
+  "OPTIO_SETUP_FILES",
+  "OPTIO_CLAUDE_CONFIG_MANIFEST",
+  "OPTIO_CLAUDE_CONFIG_REPORT",
+]);
 
 /**
  * Build `export KEY='value'` script lines for every env entry
@@ -109,7 +113,8 @@ export function buildEnvExports(env: Record<string, string>): string[] {
  * files from the last run (`OPTIO_CLAUDE_CONFIG_MANIFEST`: base64 JSON
  * `{ paths }`, relative to `~/.claude`). Files the previous run's manifest
  * listed and this one doesn't are deleted; nothing else under `~/.claude`
- * is touched, and a path that leaves it or names the manifest is ignored.
+ * is touched, and a path that leaves it or names the manifest is ignored. Run before the
+ * setup files are written.
  * Without the env (no Claude Code, or a config that couldn't be read) nothing
  * changes.
  */
@@ -132,7 +137,7 @@ export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
   `    if not isinstance(rel, str) or rel in new or os.path.isabs(rel):`,
   `        continue`,
   `    target = os.path.normpath(os.path.join(home, rel))`,
-  `    if not target.startswith(home + os.sep) or target in (mf, os.path.join(home, 'settings.json')):`,
+  `    if not target.startswith(home + os.sep) or target == mf:`,
   `        continue`,
   `    if os.path.islink(target) or os.path.isfile(target):`,
   `        os.remove(target)`,
@@ -157,6 +162,29 @@ export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
 ];
 
 /**
+ * Script lines that log the Claude config repo's notes
+ * (`OPTIO_CLAUDE_CONFIG_REPORT`) and each hook command whose executable
+ * doesn't resolve in this pod.
+ */
+export const REPORT_CLAUDE_CONFIG: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_REPORT:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_REPORT}" | base64 -d | python3 -c "`,
+  `import json, os, shutil, sys`,
+  `report = json.load(sys.stdin)`,
+  `for note in report.get('notes', []):`,
+  `    print('[optio] ' + note)`,
+  `for hook in report.get('executables', []):`,
+  `    exe = os.path.expanduser(os.path.expandvars(hook['exe']))`,
+  `    if chr(36) in exe:`,
+  `        continue`,
+  `    found = os.access(exe, os.X_OK) if '/' in exe else shutil.which(exe) is not None`,
+  `    if not found:`,
+  `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
+  `"`,
+  `fi`,
+];
+
+/**
  * Script lines that write the run's setup files (`OPTIO_SETUP_FILES`: base64
  * JSON of `{ path, content | contentBase64, executable, sensitive }`) into the
  * current directory; `/opt/optio/…` paths land in the agent's home. A
@@ -170,6 +198,8 @@ export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
  * `.mcp.json` and skills a Repo Task does.
  */
 export const WRITE_SETUP_FILES: readonly string[] = [
+  // Before the writes: a settings.json it removes is then rewritten by an adapter run.
+  ...PRUNE_CLAUDE_CONFIG,
   `if [ -n "\${OPTIO_SETUP_FILES:-}" ]; then`,
   `  echo "[optio] Writing setup files..."`,
   `  echo "\${OPTIO_SETUP_FILES}" | base64 -d | python3 -c "`,
@@ -224,24 +254,7 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        subprocess.run(['git', 'update-index', '--skip-worktree', '--'] + tracked, capture_output=True)`,
   `"`,
   `fi`,
-  // After the files: logs the Claude config repo's notes, and each hook
-  // command whose executable doesn't resolve in this pod.
-  `if [ -n "\${OPTIO_CLAUDE_CONFIG_REPORT:-}" ]; then`,
-  `  echo "\${OPTIO_CLAUDE_CONFIG_REPORT}" | base64 -d | python3 -c "`,
-  `import json, os, shutil, sys`,
-  `report = json.load(sys.stdin)`,
-  `for note in report.get('notes', []):`,
-  `    print('[optio] ' + note)`,
-  `for hook in report.get('executables', []):`,
-  `    exe = os.path.expanduser(os.path.expandvars(hook['exe']))`,
-  `    if chr(36) in exe:`,
-  `        continue`,
-  `    found = os.access(exe, os.X_OK) if '/' in exe else shutil.which(exe) is not None`,
-  `    if not found:`,
-  `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
-  `"`,
-  `fi`,
-  ...PRUNE_CLAUDE_CONFIG,
+  ...REPORT_CLAUDE_CONFIG,
 ];
 
 /**

@@ -53,11 +53,22 @@ const present = (s: ClaudeConfigSource): ClaudeConfigSource => ({
   sourceUrl: redactSkillSource(s.sourceUrl),
 });
 
-/** The source, when it is in the caller's workspace (else 404). */
-async function requireSource(req: FastifyRequest, reply: FastifyReply, id: string) {
+/**
+ * The source, when the caller may use it (else 404). A deployment-wide source
+ * (no workspace) is readable by any workspace but changed only by a caller
+ * with no workspace of their own.
+ */
+async function requireSource(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  id: string,
+  access: "read" | "write" = "write",
+) {
   const source = await claudeConfigService.getClaudeConfigSource(id);
   const wsId = req.user?.workspaceId;
-  if (!source || (wsId && source.workspaceId && source.workspaceId !== wsId)) {
+  const foreign = wsId && source?.workspaceId && source.workspaceId !== wsId;
+  const shared = wsId && source && !source.workspaceId && access === "write";
+  if (!source || foreign || shared) {
     reply.status(404).send({ error: "Claude config repo not found" });
     return null;
   }
@@ -102,7 +113,7 @@ export async function claudeConfigRoutes(rawApp: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const source = await requireSource(req, reply, req.params.id);
+      const source = await requireSource(req, reply, req.params.id, "read");
       if (source) reply.send({ source: present(source) });
     },
   );
@@ -134,7 +145,10 @@ export async function claudeConfigRoutes(rawApp: FastifyInstance) {
         if (err instanceof claudeConfigService.ClaudeConfigScopeTakenError) {
           return reply.status(409).send({ error: err.message });
         }
-        reply.status(400).send({ error: err instanceof Error ? err.message : "invalid input" });
+        if (err instanceof claudeConfigService.ClaudeConfigInvalidInputError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
       }
     },
   );
@@ -157,6 +171,7 @@ export async function claudeConfigRoutes(rawApp: FastifyInstance) {
       if (!existing) return;
       try {
         const source = await claudeConfigService.updateClaudeConfigSource(req.params.id, req.body);
+        if (!source) return reply.status(404).send({ error: "Claude config repo not found" });
         const moved =
           req.body.sourceUrl !== undefined ||
           req.body.ref !== undefined ||
@@ -168,7 +183,10 @@ export async function claudeConfigRoutes(rawApp: FastifyInstance) {
         }
         reply.send({ source: present(source) });
       } catch (err) {
-        reply.status(400).send({ error: err instanceof Error ? err.message : "invalid input" });
+        if (err instanceof claudeConfigService.ClaudeConfigInvalidInputError) {
+          return reply.status(400).send({ error: err.message });
+        }
+        throw err;
       }
     },
   );

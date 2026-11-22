@@ -3,6 +3,7 @@
  * synced tree maps onto `~/.claude`, how its `settings.json` merges with the
  * adapter's, and which hook commands to check for in the pod.
  */
+import { normalizeRepoUrl } from "@optio/shared";
 import type { AgentContainerConfig } from "@optio/shared";
 
 type SetupFile = NonNullable<AgentContainerConfig["setupFiles"]>[number];
@@ -19,7 +20,16 @@ export interface ClaudeConfigFile {
 }
 
 /** Settings keys Optio owns: the config repo never changes them. */
-const OPTIO_SETTINGS_KEYS = ["hasCompletedOnboarding", "permissions"];
+const OPTIO_SETTINGS_KEYS = [
+  "hasCompletedOnboarding",
+  "permissions",
+  "apiKeyHelper",
+  "awsAuthRefresh",
+  "awsCredentialExport",
+  "otelHeadersHelper",
+  "forceLoginMethod",
+  "forceLoginOrgUUID",
+];
 
 /** Env the pod's auth and routing depend on, which `settings.json` `env` would override. */
 const AUTH_ENV_KEYS: ReadonlySet<string> = new Set([
@@ -36,7 +46,21 @@ const AUTH_ENV_KEYS: ReadonlySet<string> = new Set([
   "GOOGLE_APPLICATION_CREDENTIALS",
 ]);
 
-export const isAuthEnvKey = (key: string): boolean => AUTH_ENV_KEYS.has(key);
+const AUTH_ENV_PREFIXES = ["ANTHROPIC_", "AWS_", "CLAUDE_CODE_USE_", "VERTEX_", "GOOGLE_CLOUD_"];
+const PROXY_ENV_KEYS: ReadonlySet<string> = new Set([
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "NODE_OPTIONS",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+]);
+
+export const isAuthEnvKey = (key: string): boolean =>
+  AUTH_ENV_KEYS.has(key) ||
+  PROXY_ENV_KEYS.has(key.toUpperCase()) ||
+  AUTH_ENV_PREFIXES.some((p) => key.startsWith(p));
 
 type Json = Record<string, unknown>;
 
@@ -103,7 +127,9 @@ export function mapClaudeConfigFiles(
       settings = f.content.toString("utf8");
       continue;
     }
-    if (rel === "settings.local.json") continue;
+    if (rel === "settings.local.json" || rel === ".optio-config-manifest") {
+      continue;
+    }
     if (parts.length === 1 && /^readme/i.test(rel)) continue;
     if (parts[0] === "skills" && parts.length > 2 && installedSkillNames.has(parts[1])) {
       if (!skipped.has(parts[1])) {
@@ -239,8 +265,10 @@ export function selectClaudeConfigSource<T extends SourceKey>(
   let best: T | null = null;
   let bestRank = -1;
   for (const s of sources) {
-    if (workspaceId && s.workspaceId && s.workspaceId !== workspaceId) continue;
-    if (s.repoUrl && s.repoUrl !== repoUrl) continue;
+    if (s.workspaceId && s.workspaceId !== workspaceId) continue;
+    if (s.repoUrl && (!repoUrl || normalizeRepoUrl(s.repoUrl) !== normalizeRepoUrl(repoUrl))) {
+      continue;
+    }
     const rank = (s.repoUrl ? 2 : 0) + (s.workspaceId ? 1 : 0);
     if (rank > bestRank) {
       best = s;
@@ -256,7 +284,7 @@ export function claudeConfigManifestEnv(paths: readonly string[]): string {
 }
 
 export interface AppliedClaudeConfig {
-  /** Injected paths relative to `~/.claude`, settings.json excluded. */
+  /** Injected paths relative to `~/.claude`; settings.json only when no adapter wrote it. */
   manifest: string[];
   setupFiles: SetupFile[];
   /** Value of `OPTIO_CLAUDE_CONFIG_REPORT`, null when there is nothing to log. */
@@ -287,6 +315,7 @@ export function applyClaudeConfig(
   const notes = [...mapped.notes];
   const setupFiles = [...existing];
   let executables: HookExecutable[] = [];
+  let ownsSettings = false;
 
   if (mapped.settings !== null) {
     const config = parseSettings(mapped.settings);
@@ -305,9 +334,11 @@ export function applyClaudeConfig(
       if (at >= 0) setupFiles[at] = settingsFile;
       else setupFiles.push(settingsFile);
       executables = hookExecutables(merged);
+      if (at < 0) ownsSettings = true;
     }
   }
   setupFiles.push(...mapped.setupFiles);
   const manifest = mapped.setupFiles.map((f) => f.path.slice(CLAUDE_HOME.length + 1));
+  if (ownsSettings) manifest.push("settings.json");
   return { setupFiles, manifest, report: claudeConfigReport(notes, executables) };
 }

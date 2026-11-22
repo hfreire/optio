@@ -42,6 +42,7 @@ import {
   CLAUDE_CONFIG_REPORT_ENV,
   claudeConfigManifestEnv,
   isAuthEnvKey,
+  type ClaudeConfigFile,
 } from "./claude-config.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { issueControllerToken } from "./controller-auth.js";
@@ -514,7 +515,7 @@ async function applyClaudeConfigRepo(
     env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv([]);
     return;
   }
-  let files;
+  let files: ClaudeConfigFile[];
   try {
     files = await readClaudeConfigFiles(source.id, source.resolvedSha);
   } catch (err) {
