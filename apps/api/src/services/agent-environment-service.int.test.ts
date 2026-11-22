@@ -7,7 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { claudeConfigFiles, users } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
 import {
   buildAgentEnvironment,
@@ -102,6 +103,8 @@ const skillPaths = (env: Env) =>
   filesOf(env)
     .filter((f) => f.path.startsWith(".claude/"))
     .map((f) => f.path);
+const manifestOf = (env: Env): string[] =>
+  JSON.parse(Buffer.from(env.OPTIO_CLAUDE_CONFIG_MANIFEST, "base64").toString("utf8")).paths;
 const build = (input: Parameters<typeof buildAgentEnvironment>[0]) =>
   buildAgentEnvironment(input, logger);
 
@@ -560,9 +563,39 @@ describe("environmentOptions", () => {
       const w = await world();
       const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
       expect(env.OPTIO_CLAUDE_CONFIG_REPORT).toBeUndefined();
+      expect(manifestOf(env)).toEqual([]);
       expect(filesOf(env).filter((f) => f.path.startsWith("/home/agent/.claude/"))).toEqual([
         adapterSettings,
       ]);
+    });
+
+    it("lets the config's model through when the adapter sets none", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const bare = {
+        path: adapterSettings.path,
+        content: JSON.stringify({ hasCompletedOnboarding: true }),
+      };
+      const env = await buildAgentEnvironment(input(w), logger, [bare]);
+      const merged = JSON.parse(filesOf(env).find((f) => f.path === adapterSettings.path)!.content);
+      expect(merged.model).toBe("haiku");
+    });
+
+    it("lists what it injects, so the pod can prune what a later config drops", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(manifestOf(env)).toEqual(["CLAUDE.md", "hooks/guard"]);
+    });
+
+    it("leaves the pod's files alone when the config cannot be read, and skips other agents", async () => {
+      const w = await world();
+      const row = await synced(w.ws.id);
+      await db.delete(claudeConfigFiles).where(eq(claudeConfigFiles.sourceId, row.id));
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(env.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
+      const codex = await buildAgentEnvironment(input(w, "codex"), logger, []);
+      expect(codex.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
     });
 
     it("injects the files, merges settings under the adapter's, and reports missing hooks", async () => {

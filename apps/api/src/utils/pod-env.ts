@@ -105,6 +105,58 @@ export function buildEnvExports(env: Record<string, string>): string[] {
 }
 
 /**
+ * Script lines that make `~/.claude` hold exactly the Claude config repo's
+ * files from the last run (`OPTIO_CLAUDE_CONFIG_MANIFEST`: base64 JSON
+ * `{ paths }`, relative to `~/.claude`). Files the previous run's manifest
+ * listed and this one doesn't are deleted; nothing else under `~/.claude`
+ * is touched, and a path that leaves it or names the manifest is ignored.
+ * Without the env (no Claude Code, or a config that couldn't be read) nothing
+ * changes.
+ */
+export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_MANIFEST:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_MANIFEST}" | base64 -d | python3 -c "`,
+  `import json, os, sys`,
+  `home = os.path.normpath(os.environ.get('OPTIO_CLAUDE_HOME') or '/home/agent/.claude')`,
+  `mf = os.path.join(home, '.optio-config-manifest')`,
+  `new = [p for p in json.load(sys.stdin).get('paths', []) if isinstance(p, str)]`,
+  `try:`,
+  `    with open(mf) as fh:`,
+  `        old = json.load(fh)`,
+  `except (OSError, ValueError):`,
+  `    old = []`,
+  `if not isinstance(old, list):`,
+  `    old = []`,
+  `removed = 0`,
+  `for rel in old:`,
+  `    if not isinstance(rel, str) or rel in new or os.path.isabs(rel):`,
+  `        continue`,
+  `    target = os.path.normpath(os.path.join(home, rel))`,
+  `    if not target.startswith(home + os.sep) or target in (mf, os.path.join(home, 'settings.json')):`,
+  `        continue`,
+  `    if os.path.islink(target) or os.path.isfile(target):`,
+  `        os.remove(target)`,
+  `        removed += 1`,
+  `        parent = os.path.dirname(target)`,
+  `        while parent != home and parent.startswith(home + os.sep):`,
+  `            try:`,
+  `                os.rmdir(parent)`,
+  `            except OSError:`,
+  `                break`,
+  `            parent = os.path.dirname(parent)`,
+  `if removed:`,
+  `    print('[optio] Removed ' + str(removed) + ' file(s) the Claude config repo no longer has')`,
+  `if new:`,
+  `    os.makedirs(home, exist_ok=True)`,
+  `    with open(mf, 'w') as fh:`,
+  `        json.dump(new, fh)`,
+  `elif os.path.exists(mf):`,
+  `    os.remove(mf)`,
+  `"`,
+  `fi`,
+];
+
+/**
  * Script lines that write the run's setup files (`OPTIO_SETUP_FILES`: base64
  * JSON of `{ path, content | contentBase64, executable, sensitive }`) into the
  * current directory; `/opt/optio/…` paths land in the agent's home. A
@@ -189,6 +241,7 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
   `"`,
   `fi`,
+  ...PRUNE_CLAUDE_CONFIG,
 ];
 
 /**

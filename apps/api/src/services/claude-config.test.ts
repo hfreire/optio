@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyClaudeConfig,
+  claudeConfigManifestEnv,
   claudeConfigReport,
   hookExecutables,
   mapClaudeConfigFiles,
@@ -32,13 +33,22 @@ describe("mergeClaudeSettings", () => {
     });
   });
 
-  it("drops the config's model and effort when Optio sets none", () => {
+  it("passes the config's model and effort through when Optio sets none", () => {
     const merged = mergeClaudeSettings(
       { hasCompletedOnboarding: true },
       { model: "haiku", effortLevel: "low" },
       none,
     );
-    expect(merged).toEqual({ hasCompletedOnboarding: true });
+    expect(merged).toEqual({ hasCompletedOnboarding: true, model: "haiku", effortLevel: "low" });
+  });
+
+  it("keeps the config's effort when Optio sets only the model", () => {
+    const merged = mergeClaudeSettings(
+      { hasCompletedOnboarding: true, model: "opus" },
+      { model: "haiku", effortLevel: "low" },
+      none,
+    );
+    expect(merged).toEqual({ hasCompletedOnboarding: true, model: "opus", effortLevel: "low" });
   });
 
   it("never takes permissions from the config", () => {
@@ -238,6 +248,34 @@ describe("selectClaudeConfigSource", () => {
     const rows = [src("foreign", null, "z"), src("global", null, null), src("mine", null, "w")];
     expect(selectClaudeConfigSource(rows, null, "w")?.id).toBe("mine");
     expect(selectClaudeConfigSource(rows.slice(0, 2), null, "w")?.id).toBe("global");
+  });
+});
+
+describe("applyClaudeConfig manifest", () => {
+  it("lists the injected paths, relative to ~/.claude and without settings.json", () => {
+    const out = applyClaudeConfig(
+      [],
+      [
+        file("CLAUDE.md"),
+        file("skills/tdd/SKILL.md"),
+        file("settings.json", "{}"),
+        file("README.md"),
+      ],
+      new Set(),
+      () => false,
+    );
+    expect(out.manifest).toEqual(["CLAUDE.md", "skills/tdd/SKILL.md"]);
+  });
+
+  it("leaves a skipped installed-skill copy out of the manifest", () => {
+    const out = applyClaudeConfig([], [file("skills/tdd/SKILL.md")], new Set(["tdd"]), () => false);
+    expect(out.manifest).toEqual([]);
+  });
+
+  it("encodes the manifest for the pod", () => {
+    expect(JSON.parse(Buffer.from(claudeConfigManifestEnv(["a"]), "base64").toString())).toEqual({
+      paths: ["a"],
+    });
   });
 });
 

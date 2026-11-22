@@ -36,7 +36,13 @@ import { buildSkillSetupFiles, getSkillsForTask, listSkills } from "./skill-serv
 import { getInstalledSkillsForTask, listInstalledSkills } from "./installed-skill-service.js";
 import { getRepoByUrl } from "./repo-service.js";
 import { getClaudeConfigSourceForRun, readClaudeConfigFiles } from "./claude-config-service.js";
-import { applyClaudeConfig, CLAUDE_CONFIG_REPORT_ENV, isAuthEnvKey } from "./claude-config.js";
+import {
+  applyClaudeConfig,
+  CLAUDE_CONFIG_MANIFEST_ENV,
+  CLAUDE_CONFIG_REPORT_ENV,
+  claudeConfigManifestEnv,
+  isAuthEnvKey,
+} from "./claude-config.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { issueControllerToken } from "./controller-auth.js";
 import { canUse, type Actor } from "./ownership.js";
@@ -492,7 +498,9 @@ export async function buildAgentEnvironment(
  * Writes the Claude config repo for this work (its repo's, else the
  * workspace's) into `setupFiles` and sets the env that logs, in the run's
  * output, what the pod is missing for its hooks. A source whose files cannot
- * be read is skipped with a warning, never failing the run.
+ * be read is skipped with a warning, never failing the run; the pod then
+ * keeps what it has. With no source the manifest is empty, which removes the
+ * files an earlier run injected.
  */
 async function applyClaudeConfigRepo(
   input: AgentEnvironmentInput,
@@ -502,7 +510,10 @@ async function applyClaudeConfigRepo(
   log: Log,
 ): Promise<void> {
   const source = await getClaudeConfigSourceForRun(input.repoUrl, input.workspaceId);
-  if (!source) return;
+  if (!source) {
+    env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv([]);
+    return;
+  }
   let files;
   try {
     files = await readClaudeConfigFiles(source.id, source.resolvedSha);
@@ -518,6 +529,7 @@ async function applyClaudeConfigRepo(
     (key) => key in adapterEnv || isReservedPodEnvName(key) || isAuthEnvKey(key),
   );
   setupFiles.splice(0, setupFiles.length, ...applied.setupFiles);
+  env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv(applied.manifest);
   if (applied.report) env[CLAUDE_CONFIG_REPORT_ENV] = applied.report;
   log.info({ sourceId: source.id, sha: source.resolvedSha }, "Injecting the Claude config repo");
 }

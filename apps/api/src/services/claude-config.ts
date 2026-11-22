@@ -9,6 +9,7 @@ type SetupFile = NonNullable<AgentContainerConfig["setupFiles"]>[number];
 
 const CLAUDE_HOME = "/home/agent/.claude";
 const CLAUDE_SETTINGS_PATH = `${CLAUDE_HOME}/settings.json`;
+export const CLAUDE_CONFIG_MANIFEST_ENV = "OPTIO_CLAUDE_CONFIG_MANIFEST";
 export const CLAUDE_CONFIG_REPORT_ENV = "OPTIO_CLAUDE_CONFIG_REPORT";
 
 export interface ClaudeConfigFile {
@@ -18,7 +19,7 @@ export interface ClaudeConfigFile {
 }
 
 /** Settings keys Optio owns: the config repo never changes them. */
-const OPTIO_SETTINGS_KEYS = ["hasCompletedOnboarding", "model", "effortLevel", "permissions"];
+const OPTIO_SETTINGS_KEYS = ["hasCompletedOnboarding", "permissions"];
 
 /** Env the pod's auth and routing depend on, which `settings.json` `env` would override. */
 const AUTH_ENV_KEYS: ReadonlySet<string> = new Set([
@@ -249,7 +250,14 @@ export function selectClaudeConfigSource<T extends SourceKey>(
   return best;
 }
 
+/** Value of `OPTIO_CLAUDE_CONFIG_MANIFEST`: what this run injects, for `PRUNE_CLAUDE_CONFIG`. */
+export function claudeConfigManifestEnv(paths: readonly string[]): string {
+  return Buffer.from(JSON.stringify({ paths })).toString("base64");
+}
+
 export interface AppliedClaudeConfig {
+  /** Injected paths relative to `~/.claude`, settings.json excluded. */
+  manifest: string[];
   setupFiles: SetupFile[];
   /** Value of `OPTIO_CLAUDE_CONFIG_REPORT`, null when there is nothing to log. */
   report: string | null;
@@ -300,5 +308,6 @@ export function applyClaudeConfig(
     }
   }
   setupFiles.push(...mapped.setupFiles);
-  return { setupFiles, report: claudeConfigReport(notes, executables) };
+  const manifest = mapped.setupFiles.map((f) => f.path.slice(CLAUDE_HOME.length + 1));
+  return { setupFiles, manifest, report: claudeConfigReport(notes, executables) };
 }
