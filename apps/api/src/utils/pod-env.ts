@@ -172,6 +172,23 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        subprocess.run(['git', 'update-index', '--skip-worktree', '--'] + tracked, capture_output=True)`,
   `"`,
   `fi`,
+  // After the files: logs the Claude config repo's notes, and each hook
+  // command whose executable doesn't resolve in this pod.
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_REPORT:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_REPORT}" | base64 -d | python3 -c "`,
+  `import json, os, shutil, sys`,
+  `report = json.load(sys.stdin)`,
+  `for note in report.get('notes', []):`,
+  `    print('[optio] ' + note)`,
+  `for hook in report.get('executables', []):`,
+  `    exe = os.path.expanduser(os.path.expandvars(hook['exe']))`,
+  `    if chr(36) in exe:`,
+  `        continue`,
+  `    found = os.access(exe, os.X_OK) if '/' in exe else shutil.which(exe) is not None`,
+  `    if not found:`,
+  `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
+  `"`,
+  `fi`,
 ];
 
 /**

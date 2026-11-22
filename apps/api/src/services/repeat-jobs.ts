@@ -30,6 +30,7 @@ export const REPEAT_SCHEDULERS = {
   "token-validation": ["token-validation.validate-token"],
   "reconcile-resync": ["reconcile-resync.resync"],
   "skill-sync": ["skill-sync.sync-due"],
+  "claude-config-sync": ["claude-config-sync.sync-due"],
   "config-sync": ["config-sync.sync"],
   housekeeping: ["housekeeping.sweep"],
   "local-sweep": ["local-sweep.sweep"],

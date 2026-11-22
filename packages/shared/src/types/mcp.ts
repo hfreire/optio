@@ -178,3 +178,40 @@ export interface UpdateInstalledSkillInput {
   agentTypes?: string[] | null;
   enabled?: boolean;
 }
+
+/**
+ * A git repo laid out like `~/.claude`, synced and written to
+ * `/home/agent/.claude` in Claude Code pods. `repoUrl` null is the
+ * workspace's; a repo's own replaces it for that repo.
+ */
+export interface ClaudeConfigSource {
+  id: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  sourceUrl: string;
+  ref: string;
+  subpath: string;
+  resolvedSha: string | null;
+  enabled: boolean;
+  lastSyncedAt: Date | null;
+  lastSyncError: string | null;
+  fileCount: number | null;
+  totalSizeBytes: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface CreateClaudeConfigSourceInput {
+  sourceUrl: string;
+  ref?: string;
+  subpath?: string;
+  repoUrl?: string | null;
+  enabled?: boolean;
+}
+
+export interface UpdateClaudeConfigSourceInput {
+  sourceUrl?: string;
+  ref?: string;
+  subpath?: string;
+  enabled?: boolean;
+}

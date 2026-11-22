@@ -58,6 +58,7 @@ import { mcpServerRoutes } from "./routes/mcp-servers.js";
 import { connectionRoutes } from "./routes/connections.js";
 import { skillRoutes } from "./routes/skills.js";
 import { installedSkillRoutes } from "./routes/installed-skills.js";
+import { claudeConfigRoutes } from "./routes/claude-config.js";
 import { workflowRoutes } from "./routes/workflows.js";
 import { persistentAgentRoutes } from "./routes/persistent-agents.js";
 import { persistentAgentInternalRoutes } from "./routes/persistent-agent-internal.js";
@@ -372,6 +373,7 @@ export async function buildServer() {
   await app.register(connectionRoutes);
   await app.register(skillRoutes);
   await app.register(installedSkillRoutes);
+  await app.register(claudeConfigRoutes);
   await app.register(workflowRoutes);
   await app.register(persistentAgentRoutes);
   await app.register(persistentAgentInternalRoutes);

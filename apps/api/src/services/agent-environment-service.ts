@@ -35,6 +35,8 @@ import { buildMcpJsonContent, getMcpServersForTask, listMcpServers } from "./mcp
 import { buildSkillSetupFiles, getSkillsForTask, listSkills } from "./skill-service.js";
 import { getInstalledSkillsForTask, listInstalledSkills } from "./installed-skill-service.js";
 import { getRepoByUrl } from "./repo-service.js";
+import { getClaudeConfigSourceForRun, readClaudeConfigFiles } from "./claude-config-service.js";
+import { applyClaudeConfig, CLAUDE_CONFIG_REPORT_ENV, isAuthEnvKey } from "./claude-config.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { issueControllerToken } from "./controller-auth.js";
 import { canUse, type Actor } from "./ownership.js";
@@ -78,6 +80,8 @@ export interface AgentEnvironmentInput {
    * retry lands in the same place. A random name without one.
    */
   runId?: string | null;
+  /** The env the runtime's adapter set: the Claude config repo's `settings.json` never overrides these. */
+  adapterEnv?: Record<string, string>;
   /** Only trusted task / Job / persistent-agent workers opt into controller grants. */
   controllerOnly?: boolean;
   controllerRunKind?: "work-run" | "turn" | "session-turn";
@@ -459,6 +463,10 @@ export async function buildAgentEnvironment(
     log.info({ injected, total: installed.length }, "Injecting marketplace skills");
   }
 
+  if (agentType === "claude-code" && !input.controllerOnly) {
+    await applyClaudeConfigRepo(input, setupFiles, installed, env, log);
+  }
+
   if (agentType === "pi") {
     if (!env.OPTIO_PI_HOME) Object.assign(env, harnessMcpFiles("pi", {}, setupFiles, input.runId));
     const piSetupDir = setupFiles
@@ -478,6 +486,40 @@ export async function buildAgentEnvironment(
     env.OPTIO_SETUP_FILES = Buffer.from(JSON.stringify(setupFiles)).toString("base64");
   }
   return env;
+}
+
+/**
+ * Writes the Claude config repo for this work (its repo's, else the
+ * workspace's) into `setupFiles` and sets the env that logs, in the run's
+ * output, what the pod is missing for its hooks. A source whose files cannot
+ * be read is skipped with a warning, never failing the run.
+ */
+async function applyClaudeConfigRepo(
+  input: AgentEnvironmentInput,
+  setupFiles: SetupFile[],
+  installed: InstalledSkillConfig[],
+  env: Record<string, string>,
+  log: Log,
+): Promise<void> {
+  const source = await getClaudeConfigSourceForRun(input.repoUrl, input.workspaceId);
+  if (!source) return;
+  let files;
+  try {
+    files = await readClaudeConfigFiles(source.id, source.resolvedSha);
+  } catch (err) {
+    log.warn({ err, sourceId: source.id }, "Skipping the Claude config repo: files unreadable");
+    return;
+  }
+  const adapterEnv = input.adapterEnv ?? {};
+  const applied = applyClaudeConfig(
+    setupFiles,
+    files,
+    new Set(installed.map((s) => s.name)),
+    (key) => key in adapterEnv || isReservedPodEnvName(key) || isAuthEnvKey(key),
+  );
+  setupFiles.splice(0, setupFiles.length, ...applied.setupFiles);
+  if (applied.report) env[CLAUDE_CONFIG_REPORT_ENV] = applied.report;
+  log.info({ sourceId: source.id, sha: source.resolvedSha }, "Injecting the Claude config repo");
 }
 
 /**
