@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.5] - 2026-11-21
+
+### Fixed
+
+- A repo pod whose container restarted no longer lets a run, session terminal or session chat start on the previous boot's readiness marker while its init (packages, dockerd, the proxy CA) is still running: both init scripts now remove the marker as their first step. This ships in the agent images, so it takes effect once they are rebuilt or pulled and running repo pods are recycled (#846).
+- Optio Agent's tab strip no longer shows a single tab for one frame when it opens or when you switch sessions (#844).
+
+## [0.26.4] - 2026-11-21
+
+### Fixed
+
+- Starting a run no longer fails with "argument list too long" when its skills, MCP config or other setup files are large: the run's start script now reaches the pod over the exec's stdin instead of as one command-line argument, and the setup files are no longer passed through the pod environment. A single prompt over 128 KiB still fails (#800).
+- Runs dispatched together no longer land on the same pod past `maxAgentsPerPod` while the repo (or Job) can still scale out: the pod slot is taken atomically when the pod is picked, and a run waits for a pod that is coming up before sharing a full one (#809).
+- A task whose PR merged no longer keeps its repo pod (and the pod's volume) running forever: a completed task's preserved worktree is removed and stops blocking idle scale-down. Pods already stuck this way are released by the first cleanup pass after upgrading. Worktrees of cancelled, failed and needs-attention tasks are kept as before (#808).
+- The repository checks out on Windows again: a source file named `nul.ts` (a reserved device name there) stopped `git clone` and `git pull` with "invalid path". It is now `nul-bytes.ts`, and a test keeps such names out of the tree.
+
+### Changed
+
+- Android app dependency updates: the Firebase BoM 35.2.0 (Firebase Messaging 26) and the google-services plugin 4.6.0.
+
+## [0.26.3] - 2026-11-21
+
+### Security
+
+- Next.js 15.5.29 in the web app and the site, fixing three advisories that affect `next` up to 15.5.28: an SVG rejection bypass in image optimization (GHSA-7qx7-33qx-rqx2), HttpOnly cookie exposure through an internal response header on Edge runtime routes (GHSA-f3mh-rxg3-f5g2), and cross-client response injection and disclosure in self-hosted apps that forward fetched responses (GHSA-pc58-hwjq-p385).
+- Not an Optio change: the November 2026 nginx advisories ("NGINX2Root", CVE-2026-123007 and others) don't affect Optio's images, which ship no nginx. Deployments behind ingress-nginx or another nginx proxy should upgrade it to nginx 1.30.7 / 1.31.9 or later, or turn off HTTP/2 on it until they can.
+
+## [0.26.2] - 2026-11-19
+
+### Changed
+
+- Work list: queued work shows a yellow status dot instead of the faded purple that read as grey, so it stands apart from running work.
+
 ## [0.26.1] - 2026-11-18
 
 ### Changed

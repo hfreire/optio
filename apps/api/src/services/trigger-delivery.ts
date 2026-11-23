@@ -101,8 +101,8 @@ export function deliverOccurrence(id?: string): Promise<TriggerFireResult | null
 async function dispatchOccurrence(id?: string): Promise<TriggerFireResult | null> {
   let failure: unknown;
   const result = await db.transaction(async (tx) => {
-    const [picked] = await tx.execute<{ id: string }>(sql`
-      SELECT id FROM trigger_occurrences WHERE ${id ? sql`id = ${id}::uuid` : sql`state = 'pending' AND next_attempt_at <= now()`}
+    const [picked] = await tx.execute<{ id: string; due: boolean }>(sql`
+      SELECT id, next_attempt_at <= now() AS due FROM trigger_occurrences WHERE ${id ? sql`id = ${id}::uuid` : sql`state = 'pending' AND next_attempt_at <= now()`}
       ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`);
     if (!picked) return null;
     const [row] = await tx
@@ -110,12 +110,9 @@ async function dispatchOccurrence(id?: string): Promise<TriggerFireResult | null
       .from(triggerOccurrences)
       .where(eq(triggerOccurrences.id, picked.id));
     if (row.state === "started") return row.result as TriggerFireResult;
-    if (
-      row.state === "skipped" ||
-      row.state === "failed" ||
-      row.nextAttemptAt.getTime() > Date.now()
-    )
-      return null;
+    // Due-ness is judged on the database clock that stamped next_attempt_at;
+    // the host clock can run behind it and would hold a fresh occurrence back.
+    if (row.state === "skipped" || row.state === "failed" || !picked.due) return null;
     try {
       const [trigger] = await db
         .select()
