@@ -335,6 +335,7 @@ export function startWorkflowWorker() {
           settings: workflow.settings,
           runId: workflowRunId,
           controllerRunKind: "work-run" as const,
+          adapterEnv: env,
         };
         Object.assign(
           env,

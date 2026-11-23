@@ -709,6 +709,25 @@ describe("PRUNE_CLAUDE_CONFIG", () => {
     expect(existsSync(manifest(home))).toBe(false);
   });
 
+  it("survives another run removing the same files at the same moment", async () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    const rels = Array.from({ length: 1500 }, (_, i) => `skills/s${i}/SKILL.md`);
+    for (const rel of rels) mk(home, rel);
+    writeFileSync(manifest(home), JSON.stringify(rels));
+    const env = {
+      ...process.env,
+      OPTIO_CLAUDE_HOME: home,
+      OPTIO_CLAUDE_CONFIG_MANIFEST: Buffer.from(JSON.stringify({ paths: [] })).toString("base64"),
+    };
+    const once = () =>
+      new Promise<number | null>((resolve) => {
+        const child = spawn("bash", ["-c", PRUNE_CLAUDE_CONFIG.join("\n")], { env });
+        child.on("close", resolve);
+      });
+    expect(await Promise.all([once(), once()])).toEqual([0, 0]);
+    expect(existsSync(join(home, "skills"))).toBe(false);
+  });
+
   it("writes the first manifest and tolerates a corrupt one", () => {
     const home = mkdtempSync(join(tmpdir(), "claude-home-"));
     run(home, ["CLAUDE.md"]);

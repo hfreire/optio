@@ -21,9 +21,12 @@ import {
   readClaudeConfigFiles,
 } from "../services/claude-config-service.js";
 
+const queued = vi.hoisted(() => [] as { name: string; id?: string }[]);
+
 vi.mock("bullmq", () => ({
   Queue: class {
-    add() {
+    add(name: string, data: { id?: string }) {
+      queued.push({ name, id: data?.id });
       return Promise.resolve();
     }
   },
@@ -217,5 +220,104 @@ describe("claude config sync", () => {
       wsLevel.id,
     );
     expect(await getClaudeConfigSourceForRun(repoUrl, (await insertWorkspace()).id)).toBeNull();
+  });
+});
+
+describe("claude config sync worker", () => {
+  it("re-syncs every enabled source each pass, not only the due ones", async () => {
+    const { processClaudeConfigSyncJob, syncClaudeConfigOne } =
+      await import("./claude-config-sync-worker.js");
+    const synced = (await newSource()).row;
+    await syncClaudeConfigOne(synced.id);
+    const off = (await newSource()).row;
+    await syncClaudeConfigOne(off.id);
+    await db
+      .update(claudeConfigSources)
+      .set({ enabled: false })
+      .where(eq(claudeConfigSources.id, off.id));
+    queued.length = 0;
+    await processClaudeConfigSyncJob({ name: "sync-due", data: {} });
+    const ids = queued.filter((q) => q.name === "sync-one").map((q) => q.id);
+    expect(ids).toContain(synced.id);
+    expect(ids).not.toContain(off.id);
+  });
+
+  it("picks up a commit pushed to the tracked ref", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const upstream = path.join(root, "moving");
+    await fs.mkdir(upstream);
+    const gitIn = (args: string[]) =>
+      run("git", args, {
+        cwd: upstream,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@example.com",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@example.com",
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "commit.gpgsign",
+          GIT_CONFIG_VALUE_0: "false",
+        },
+      });
+    await fs.writeFile(path.join(upstream, "CLAUDE.md"), "v1\n");
+    await gitIn(["init", "-q", "-b", "main"]);
+    await gitIn(["add", "."]);
+    await gitIn(["commit", "-q", "-m", "one"]);
+    const ws = await insertWorkspace();
+    const row = await createClaudeConfigSource({ sourceUrl: `file://${upstream}` }, ws.id);
+    await syncClaudeConfigOne(row.id);
+    const [first] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+
+    await fs.writeFile(path.join(upstream, "CLAUDE.md"), "v2\n");
+    await gitIn(["commit", "-qam", "two"]);
+    await syncClaudeConfigOne(row.id);
+    const [second] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(second.resolvedSha).not.toBe(first.resolvedSha);
+    const files = await readClaudeConfigFiles(row.id, second.resolvedSha);
+    expect(files[0].content.toString()).toBe("v2\n");
+  });
+
+  it("skips a disabled source", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const { row } = await newSource();
+    await db
+      .update(claudeConfigSources)
+      .set({ enabled: false })
+      .where(eq(claudeConfigSources.id, row.id));
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.resolvedSha).toBeNull();
+  });
+
+  it("runs a sync-one job, and asks to be retried while another instance holds the source", async () => {
+    const { processClaudeConfigSyncJob, ClaudeConfigSyncBusyError } =
+      await import("./claude-config-sync-worker.js");
+    const { underPollerLease } = await import("../services/poller-lease.js");
+    const { row } = await newSource();
+    await underPollerLease(
+      `claude-config-sync:${row.id}`,
+      async () => {
+        await expect(
+          processClaudeConfigSyncJob({ name: "sync-one", data: { id: row.id } }),
+        ).rejects.toBeInstanceOf(ClaudeConfigSyncBusyError);
+      },
+      "other-instance",
+    );
+    await processClaudeConfigSyncJob({ name: "sync-one", data: { id: row.id } });
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
   });
 });

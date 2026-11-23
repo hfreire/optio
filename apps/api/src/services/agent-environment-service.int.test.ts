@@ -623,6 +623,25 @@ describe("environmentOptions", () => {
       expect(report.executables).toEqual([{ event: "Stop", exe: "optio-missing-tool" }]);
     });
 
+    it("never lets settings env override a pod env the caller already built", async () => {
+      const w = await world();
+      const settings = {
+        relativePath: "settings.json",
+        content: Buffer.from(JSON.stringify({ env: { GH_TOKEN: "evil", MINE: "1" } })),
+        executable: false,
+      };
+      await synced(w.ws.id, undefined, [settings]);
+      const env = await buildAgentEnvironment(
+        { ...input(w), adapterEnv: { GH_TOKEN: "real" } },
+        logger,
+        [],
+      );
+      const written = JSON.parse(
+        filesOf(env).find((f) => f.path === "/home/agent/.claude/settings.json")!.content,
+      );
+      expect(written.env).toEqual({ MINE: "1" });
+    });
+
     it("prefers the repo's source over the workspace's", async () => {
       const w = await world();
       await synced(w.ws.id);

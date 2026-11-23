@@ -6,7 +6,8 @@
  * instance reads a complete set.
  *
  *   - "sync-one" { id }  on demand (POST /api/claude-config/:id/sync)
- *   - "sync-due" {}      periodic; sources never synced or missing their files
+ *   - "sync-due" {}      periodic; every enabled source (a no-op unless its ref
+ *                        moved) plus any never synced or missing its files
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -49,17 +50,21 @@ const claudeConfigSyncQueue = new Queue("claude-config-sync", {
 });
 
 /** A sync-one found its source's lease held: retried by BullMQ with backoff. */
-class ClaudeConfigSyncBusyError extends Error {
+export class ClaudeConfigSyncBusyError extends Error {
   constructor(public readonly sourceId: string) {
     super(`Claude config source ${sourceId} is being synced by another instance; retrying`);
     this.name = "ClaudeConfigSyncBusyError";
   }
 }
 
-async function processClaudeConfigSyncJob(job: { name: string; data: unknown }): Promise<void> {
+export async function processClaudeConfigSyncJob(job: {
+  name: string;
+  data: unknown;
+}): Promise<void> {
   if (job.name === "sync-due") {
     await underPollerLease("claude-config-sync", async () => {
-      for (const id of await dueClaudeConfigIds()) await enqueueClaudeConfigSync(id);
+      const ids = new Set([...(await dueClaudeConfigIds()), ...(await enabledClaudeConfigIds())]);
+      for (const id of ids) await enqueueClaudeConfigSync(id);
     });
   } else if (job.name === "sync-one") {
     const { id } = job.data as { id: string };
@@ -93,6 +98,15 @@ export function startClaudeConfigSyncWorker() {
     logger.error({ err, jobName: job?.name, jobId: job?.id }, "claude-config-sync job failed");
   });
   return worker;
+}
+
+/** Re-resolved each pass: a sync at an unmoved commit costs one `git ls-remote`. */
+async function enabledClaudeConfigIds(): Promise<string[]> {
+  const rows = await db
+    .select({ id: claudeConfigSources.id })
+    .from(claudeConfigSources)
+    .where(eq(claudeConfigSources.enabled, true));
+  return rows.map((r) => r.id);
 }
 
 export async function dueClaudeConfigIds(): Promise<string[]> {

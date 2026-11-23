@@ -87,7 +87,7 @@ export interface AgentEnvironmentInput {
    * retry lands in the same place. A random name without one.
    */
   runId?: string | null;
-  /** The env the runtime's adapter set: the Claude config repo's `settings.json` never overrides these. */
+  /** The pod env the caller has built so far: the Claude config repo's `settings.json` never overrides these. */
   adapterEnv?: Record<string, string>;
   /** Only trusted task / Job / persistent-agent workers opt into controller grants. */
   controllerOnly?: boolean;
@@ -522,12 +522,15 @@ async function applyClaudeConfigRepo(
     log.warn({ err, sourceId: source.id }, "Skipping the Claude config repo: files unreadable");
     return;
   }
-  const adapterEnv = input.adapterEnv ?? {};
   const applied = applyClaudeConfig(
     setupFiles,
     files,
     new Set(installed.map((s) => s.name)),
-    (key) => key in adapterEnv || isReservedPodEnvName(key) || isAuthEnvKey(key),
+    (key) =>
+      key in (input.adapterEnv ?? {}) ||
+      key in env ||
+      isReservedPodEnvName(key) ||
+      isAuthEnvKey(key),
   );
   setupFiles.splice(0, setupFiles.length, ...applied.setupFiles);
   env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv(applied.manifest);
