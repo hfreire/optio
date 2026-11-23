@@ -641,6 +641,42 @@ describe("GitLabPlatform", () => {
     });
   });
 
+  describe("review thread actions", () => {
+    it("replies with a note on the discussion", async () => {
+      mockJsonResponse({});
+
+      await platform.replyToReviewThread(ri, 7, { threadId: "abc123", commentId: 5 }, "Done");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7/discussions/abc123/notes`,
+      );
+      expect(call[1].method).toBe("POST");
+      expect(JSON.parse(call[1].body)).toEqual({ body: "Done" });
+    });
+
+    it("resolves the discussion", async () => {
+      mockJsonResponse({});
+
+      await platform.resolveReviewThread(ri, 7, "abc123");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7/discussions/abc123`,
+      );
+      expect(call[1].method).toBe("PUT");
+      expect(JSON.parse(call[1].body)).toEqual({ resolved: true });
+    });
+
+    it("throws a GitLabApiError on failure", async () => {
+      mockJsonResponse({ message: "404 Not found" }, false, 404);
+
+      await expect(platform.resolveReviewThread(ri, 7, "nope")).rejects.toBeInstanceOf(
+        GitLabApiError,
+      );
+    });
+  });
+
   describe("listIssues", () => {
     it("maps GitLab issue fields", async () => {
       mockJsonResponse([

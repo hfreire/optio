@@ -1,5 +1,6 @@
 import { browseGitHubRepos } from "../github-repo-browse-service.js";
 import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
+import { githubGraphqlUrl } from "./github-pr-facts.js";
 import { defaultBranchFirst, filterBranches } from "./pr-search.js";
 import type {
   GitPlatform,
@@ -354,6 +355,38 @@ export class GitHubPlatform implements GitPlatform {
       body: JSON.stringify(payload),
     });
     return { url: data.html_url ?? "" };
+  }
+
+  async replyToReviewThread(
+    ri: RepoIdentifier,
+    prNumber: number,
+    thread: { threadId: string; commentId: number },
+    body: string,
+  ): Promise<void> {
+    await this.fetchJson(this.url(ri, `/pulls/${prNumber}/comments/${thread.commentId}/replies`), {
+      method: "POST",
+      headers: this.headers(true),
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  async resolveReviewThread(ri: RepoIdentifier, _prNumber: number, threadId: string) {
+    const res = await this.fetchJson<{ errors?: Array<{ message: string }> }>(
+      githubGraphqlUrl(ri.apiBaseUrl),
+      {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({
+          query:
+            "mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }",
+          variables: { threadId },
+        }),
+      },
+    );
+    if (res.errors?.length) {
+      const message = res.errors.map((e) => e.message).join("; ");
+      throw new GitHubApiError(422, JSON.stringify({ message }));
+    }
   }
 
   // ── Issue reads/writes ────────────────────────────────────────────────────

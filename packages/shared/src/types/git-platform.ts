@@ -157,6 +157,15 @@ export interface GitPlatform {
       commitId?: string;
     },
   ): Promise<{ url: string }>;
+  /** Reply on an existing review thread. Platforms without threads leave it out. */
+  replyToReviewThread?(
+    ri: RepoIdentifier,
+    prNumber: number,
+    thread: { threadId: string; commentId: number },
+    body: string,
+  ): Promise<void>;
+  /** Mark an existing review thread resolved. Platforms without threads leave it out. */
+  resolveReviewThread?(ri: RepoIdentifier, prNumber: number, threadId: string): Promise<void>;
 
   // Issue reads/writes
   listIssues(

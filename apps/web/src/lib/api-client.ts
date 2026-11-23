@@ -45,6 +45,7 @@ import type {
   WorkLinkStatus,
 } from "@optio/shared";
 import type { ConfigApplyResult, ConfigStatus, ExportedManifest } from "@optio/shared";
+import type { PrReviewThreadAction, PrReviewThreadActionResult } from "@optio/shared";
 import type { PrAgentAction, PrInboxResponse } from "@optio/shared";
 
 /** Read the current workspace ID from localStorage (set by workspace switcher). */
@@ -1611,6 +1612,7 @@ export const api = {
       summary?: string | null;
       verdict?: "approve" | "request_changes" | "comment" | null;
       fileComments?: Array<{ path: string; line?: number; side?: string; body: string }> | null;
+      threadActions?: PrReviewThreadAction[];
     },
   ) =>
     request<{ review: any }>(`/api/pr-reviews/${id}`, {
@@ -1619,7 +1621,11 @@ export const api = {
     }),
 
   submitPrReview: (id: string) =>
-    request<{ review: any; reviewUrl?: string }>(`/api/pr-reviews/${id}/submit`, {
+    request<{
+      review: any;
+      reviewUrl?: string;
+      threadActionResults?: PrReviewThreadActionResult[];
+    }>(`/api/pr-reviews/${id}/submit`, {
       method: "POST",
     }),
 

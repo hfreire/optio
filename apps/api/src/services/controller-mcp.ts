@@ -601,6 +601,18 @@ export function createControllerMcp(
           .max(200)
           .nullable()
           .optional(),
+        threadActions: z
+          .array(
+            z.object({
+              threadId: z.string().min(1).max(500),
+              commentId: z.number().int().positive(),
+              action: z.enum(["resolve", "reply", "reply_resolve"]),
+              body: z.string().max(20000).optional(),
+              enabled: z.boolean().optional(),
+            }),
+          )
+          .max(100)
+          .optional(),
       }),
     },
     true,

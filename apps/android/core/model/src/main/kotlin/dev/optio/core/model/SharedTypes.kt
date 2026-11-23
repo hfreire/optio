@@ -3637,6 +3637,50 @@ data class PrReviewFileComment(
     val body: String,
 )
 
+@Serializable(with = PrReviewThreadActionKind.Companion::class)
+enum class PrReviewThreadActionKind(override val raw: String) : RawEnum {
+    RESOLVE("resolve"),
+    REPLY("reply"),
+    REPLY_RESOLVE("reply_resolve"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewThreadActionKind>("dev.optio.core.model.PrReviewThreadActionKind", entries, UNKNOWN)
+}
+
+/** An action on an existing review thread, run when the review is submitted. */
+@Serializable
+data class PrReviewThreadAction(
+    /** GitHub GraphQL review-thread node id, or GitLab discussion id. */
+    val threadId: String,
+    /** REST id of the thread's first comment (GitHub reply target). */
+    val commentId: Double,
+    val action: PrReviewThreadActionKind,
+    /** Markdown; required for `reply` and `reply_resolve`. */
+    val body: String? = null,
+    /** Off = skipped on submit. Absent means on. */
+    val enabled: Boolean? = null,
+)
+
+@Serializable
+data class PrReviewThreadActionResult(
+    val threadId: String,
+    val action: PrReviewThreadActionKind,
+    val status: Status,
+    val error: String? = null,
+) {
+    @Serializable(with = Status.Companion::class)
+    enum class Status(override val raw: String) : RawEnum {
+        DONE("done"),
+        FAILED("failed"),
+        SKIPPED("skipped"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<Status>("dev.optio.core.model.PrReviewThreadActionResult.Status", entries, UNKNOWN)
+    }
+}
+
 // endregion
 
 // region push.ts

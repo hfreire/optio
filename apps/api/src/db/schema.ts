@@ -18,7 +18,11 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { RemoteWorkspaceLaunch, RemoteWorkspaceProviderId } from "@optio/shared";
+import type {
+  PrReviewThreadAction,
+  RemoteWorkspaceLaunch,
+  RemoteWorkspaceProviderId,
+} from "@optio/shared";
 import type {
   ConfigApplyResult,
   WorkLink,
@@ -1648,6 +1652,10 @@ export const prReviews = pgTable(
       jsonb("file_comments").$type<
         Array<{ path: string; line?: number; side?: string; body: string }>
       >(),
+    threadActions: jsonb("thread_actions")
+      .$type<PrReviewThreadAction[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     origin: text("origin").notNull().default("manual"), // "manual" | "auto"
     userEngaged: boolean("user_engaged").notNull().default(false),
     autoSubmitted: boolean("auto_submitted").notNull().default(false),

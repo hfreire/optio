@@ -40,6 +40,28 @@ export interface PrReviewFileComment {
   body: string;
 }
 
+export type PrReviewThreadActionKind = "resolve" | "reply" | "reply_resolve";
+
+/** An action on an existing review thread, run when the review is submitted. */
+export interface PrReviewThreadAction {
+  /** GitHub GraphQL review-thread node id, or GitLab discussion id. */
+  threadId: string;
+  /** REST id of the thread's first comment (GitHub reply target). */
+  commentId: number;
+  action: PrReviewThreadActionKind;
+  /** Markdown; required for `reply` and `reply_resolve`. */
+  body?: string;
+  /** Off = skipped on submit. Absent means on. */
+  enabled?: boolean;
+}
+
+export interface PrReviewThreadActionResult {
+  threadId: string;
+  action: PrReviewThreadActionKind;
+  status: "done" | "failed" | "skipped";
+  error?: string;
+}
+
 /**
  * Valid state transitions for `pr_reviews`. Unlike repo tasks, pr_reviews
  * can cycle back to reviewing from submitted/stale when the PR advances

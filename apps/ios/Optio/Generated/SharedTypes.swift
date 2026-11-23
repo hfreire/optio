@@ -7772,6 +7772,97 @@ public struct PrReviewFileComment: Codable, Hashable, Sendable {
     }
 }
 
+public enum PrReviewThreadActionKind: String, Codable, Hashable, Sendable, CaseIterable {
+    case resolve = "resolve"
+    case reply = "reply"
+    case replyResolve = "reply_resolve"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [PrReviewThreadActionKind] = [.resolve, .reply, .replyResolve]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PrReviewThreadActionKind(rawValue: raw) ?? .unknown
+    }
+}
+
+/// An action on an existing review thread, run when the review is submitted.
+public struct PrReviewThreadAction: Codable, Hashable, Sendable {
+    /// GitHub GraphQL review-thread node id, or GitLab discussion id.
+    public let threadId: String
+    /// REST id of the thread's first comment (GitHub reply target).
+    public let commentId: Double
+    public let action: PrReviewThreadActionKind
+    /// Markdown; required for `reply` and `reply_resolve`.
+    public let body: String?
+    /// Off = skipped on submit. Absent means on.
+    public let enabled: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case commentId = "commentId"
+        case action = "action"
+        case body = "body"
+        case enabled = "enabled"
+    }
+
+    public init(
+        threadId: String,
+        commentId: Double,
+        action: PrReviewThreadActionKind,
+        body: String? = nil,
+        enabled: Bool? = nil
+    ) {
+        self.threadId = threadId
+        self.commentId = commentId
+        self.action = action
+        self.body = body
+        self.enabled = enabled
+    }
+}
+
+public struct PrReviewThreadActionResult: Codable, Hashable, Sendable {
+    public enum Status: String, Codable, Hashable, Sendable, CaseIterable {
+        case done = "done"
+        case failed = "failed"
+        case skipped = "skipped"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [Status] = [.done, .failed, .skipped]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Status(rawValue: raw) ?? .unknown
+        }
+    }
+
+    public let threadId: String
+    public let action: PrReviewThreadActionKind
+    public let status: Status
+    public let error: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case action = "action"
+        case status = "status"
+        case error = "error"
+    }
+
+    public init(
+        threadId: String,
+        action: PrReviewThreadActionKind,
+        status: Status,
+        error: String? = nil
+    ) {
+        self.threadId = threadId
+        self.action = action
+        self.status = status
+        self.error = error
+    }
+}
+
 // MARK: - push.ts
 
 /// Which push service a device registered with.

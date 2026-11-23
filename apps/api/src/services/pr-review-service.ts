@@ -26,6 +26,8 @@ import {
   type PrReviewVerdict,
   type PrReviewOrigin,
   type PrReviewFileComment,
+  type PrReviewThreadAction,
+  type PrReviewThreadActionResult,
 } from "@optio/shared";
 import { db } from "../db/client.js";
 import {
@@ -44,6 +46,13 @@ import { publishEvent } from "./event-bus.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { logger } from "../logger.js";
+import { z } from "zod";
+import {
+  hasEnabledThreadActions,
+  parseThreadActions,
+  runThreadActions,
+  threadActionSchema,
+} from "./pr-review-thread-actions.js";
 
 export type PrReview = typeof prReviews.$inferSelect;
 export type PrReviewRun = typeof prReviewRuns.$inferSelect;
@@ -442,6 +451,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
         verdict: null,
         summary: null,
         fileComments: null,
+        threadActions: [],
         submittedAt: null,
         autoSubmitted: false,
         errorMessage: null,
@@ -710,6 +720,7 @@ export async function updatePrReviewDraft(
     summary?: string | null;
     verdict?: PrReviewVerdict | null;
     fileComments?: PrReviewFileComment[] | null;
+    threadActions?: PrReviewThreadAction[];
   },
 ): Promise<PrReview> {
   const [current] = await db.select().from(prReviews).where(eq(prReviews.id, id));
@@ -722,6 +733,9 @@ export async function updatePrReviewDraft(
   if (updates.summary !== undefined) patch.summary = updates.summary;
   if (updates.verdict !== undefined) patch.verdict = updates.verdict;
   if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
+  if (updates.threadActions !== undefined) {
+    patch.threadActions = z.array(threadActionSchema).parse(updates.threadActions);
+  }
   const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
   return updated;
 }
@@ -748,11 +762,15 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
   if (parsed?.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
     updates.verdict = parsed.verdict;
   }
-  if (parsed?.summary) updates.summary = parsed.summary;
+  if (typeof parsed?.summary === "string") updates.summary = parsed.summary;
   if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
+  const threadActions = parsed ? parseThreadActions(parsed.threadActions) : null;
+  if (threadActions) updates.threadActions = threadActions;
 
-  // Fall back to the run's result summary if we couldn't parse JSON.
-  if (!updates.summary && run.resultSummary) {
+  // Fall back to the run's result summary if we couldn't parse JSON, unless
+  // the draft deliberately has no summary because it only acts on threads.
+  const threadsOnly = !!threadActions?.length && updates.summary === "";
+  if (!updates.summary && !threadsOnly && run.resultSummary) {
     if (!/^Agent (completed successfully|exited with code \d+)$/.test(run.resultSummary)) {
       updates.summary = run.resultSummary;
     }
@@ -789,7 +807,7 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
 
 function extractVerdictJson(
   content: string,
-): { verdict?: string; summary?: string; fileComments?: unknown } | null {
+): { verdict?: string; summary?: unknown; fileComments?: unknown; threadActions?: unknown } | null {
   const patterns = [
     /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
     /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
@@ -814,7 +832,11 @@ function extractVerdictJson(
 export async function submitReview(
   id: string,
   userId?: string,
-): Promise<{ review: PrReview; reviewUrl?: string }> {
+): Promise<{
+  review: PrReview;
+  reviewUrl?: string;
+  threadActionResults: PrReviewThreadActionResult[];
+}> {
   const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
   if (!review) throw new Error("PR review not found");
   const submittable: PrReviewState[] = [PrReviewState.READY, PrReviewState.STALE];
@@ -844,22 +866,42 @@ export async function submitReview(
       ...(c.side ? { side: c.side } : {}),
     }));
 
-  const result = await platform.submitReview(ri, review.prNumber, {
-    event,
-    body: review.summary ?? "Review by Optio",
-    commitId: review.headSha,
-    comments: comments.length > 0 ? comments : undefined,
-  });
+  const threadActions = review.threadActions ?? [];
+  const threadsOnly =
+    hasEnabledThreadActions(threadActions) && !review.summary?.trim() && comments.length === 0;
 
+  let reviewUrl: string | undefined;
+  if (!threadsOnly) {
+    const result = await platform.submitReview(ri, review.prNumber, {
+      event,
+      body: review.summary ?? "Review by Optio",
+      commitId: review.headSha,
+      comments: comments.length > 0 ? comments : undefined,
+    });
+    reviewUrl = result.url;
+  }
+
+  const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions);
+  const failed = threadActionResults.filter((r) => r.status === "failed");
+  if (failed.length > 0) {
+    logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
+  }
+
+  // Submitting settles the draft the person engaged with, so a later push can
+  // still get an automatic follow-up draft (the repo's review mode decides).
   await db
     .update(prReviews)
-    .set({ submittedAt: new Date(), updatedAt: new Date() })
+    .set({
+      submittedAt: new Date(),
+      updatedAt: new Date(),
+      ...(review.origin === "auto" ? { userEngaged: false } : {}),
+    })
     .where(eq(prReviews.id, id));
   const updated = await transitionPrReview(id, PrReviewState.SUBMITTED, "user_submit", {
     userId,
   });
 
-  return { review: updated ?? review, reviewUrl: result.url };
+  return { review: updated ?? review, reviewUrl, threadActionResults };
 }
 
 // ── Re-review ──────────────────────────────────────────────────────────────
@@ -1124,6 +1166,9 @@ export async function appendChatReplyFromRun(runId: string): Promise<void> {
     }
     if (typeof parsed.summary === "string") updates.summary = parsed.summary;
     if (Array.isArray(parsed.fileComments)) updates.fileComments = parsed.fileComments;
+    if (Array.isArray(parsed.threadActions)) {
+      updates.threadActions = parseThreadActions(parsed.threadActions);
+    }
     if (Object.keys(updates).length > 1) {
       await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
     }

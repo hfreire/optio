@@ -7,7 +7,8 @@ import { api } from "@/lib/api-client";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
-import { classifyError } from "@optio/shared";
+import { classifyError, type PrReviewThreadAction } from "@optio/shared";
+import { ReviewThreadActions } from "@/components/review-thread-actions";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LogViewer } from "@/components/log-viewer";
 import { AgentAvatar } from "@/components/agent-avatar";
@@ -54,6 +55,7 @@ interface Review {
   verdict: string | null;
   summary: string | null;
   fileComments: Array<{ path: string; line?: number; side?: string; body: string }> | null;
+  threadActions?: PrReviewThreadAction[];
   origin: string;
   userEngaged: boolean;
   autoSubmitted: boolean;
@@ -100,6 +102,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
   const [comments, setComments] = useState<
     Array<{ path: string; line?: number; side?: string; body: string }>
   >([]);
+  const [threadActions, setThreadActions] = useState<PrReviewThreadAction[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -122,6 +125,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
       setSummary(r.review.summary ?? "");
       setVerdict(r.review.verdict ?? "");
       setComments(r.review.fileComments ?? []);
+      setThreadActions(r.review.threadActions ?? []);
       setDirty(false);
 
       if (r.review.prUrl) {
@@ -208,6 +212,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
         summary,
         verdict: (verdict as any) || null,
         fileComments: comments,
+        threadActions,
       });
       setReview(res.review);
       setDirty(false);
@@ -224,7 +229,16 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
     try {
       const res = await api.submitPrReview(id);
       setReview(res.review);
-      toast.success("Review submitted");
+      const failed = res.threadActionResults?.filter((r) => r.status === "failed") ?? [];
+      if (failed.length > 0) {
+        toast.error(
+          `Review submitted, ${failed.length} thread action${failed.length === 1 ? "" : "s"} failed: ${failed
+            .map((r) => r.error)
+            .join("; ")}`,
+        );
+      } else {
+        toast.success("Review submitted");
+      }
     } catch (err: any) {
       toast.error(err.message || "Failed to submit");
     }
@@ -681,6 +695,18 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
                     )}
                   </div>
                 </div>
+
+                {threadActions.length > 0 && (
+                  <ReviewThreadActions
+                    actions={threadActions}
+                    prUrl={review.prUrl}
+                    editable={isEditable}
+                    onChange={(next) => {
+                      setThreadActions(next);
+                      setDirty(true);
+                    }}
+                  />
+                )}
 
                 {/* Actions */}
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-border">

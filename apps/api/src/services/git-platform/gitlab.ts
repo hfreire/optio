@@ -683,6 +683,28 @@ export class GitLabPlatform implements GitPlatform {
     throw new GitLabNotReadyError("rebase_in_progress");
   }
 
+  async replyToReviewThread(
+    ri: RepoIdentifier,
+    prNumber: number,
+    thread: { threadId: string; commentId: number },
+    body: string,
+  ): Promise<void> {
+    await this.fetchJson(
+      this.url(
+        ri,
+        `/merge_requests/${prNumber}/discussions/${encodeURIComponent(thread.threadId)}/notes`,
+      ),
+      { method: "POST", headers: this.headers(true), body: JSON.stringify({ body }) },
+    );
+  }
+
+  async resolveReviewThread(ri: RepoIdentifier, prNumber: number, threadId: string): Promise<void> {
+    await this.fetchJson(
+      this.url(ri, `/merge_requests/${prNumber}/discussions/${encodeURIComponent(threadId)}`),
+      { method: "PUT", headers: this.headers(true), body: JSON.stringify({ resolved: true }) },
+    );
+  }
+
   async submitReview(
     ri: RepoIdentifier,
     prNumber: number,

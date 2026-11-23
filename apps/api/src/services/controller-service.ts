@@ -187,6 +187,7 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
               verdict: r.verdict,
               summary: r.summary,
               fileComments: r.fileComments,
+              threadActions: r.threadActions,
               errorMessage: r.errorMessage,
             }
           : {}),

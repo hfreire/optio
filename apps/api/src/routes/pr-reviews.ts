@@ -31,6 +31,16 @@ const createReviewSchema = z
   })
   .describe("Body for launching a PR review");
 
+const ThreadActionSchema = z
+  .object({
+    threadId: z.string().min(1).describe("GitHub review-thread node id or GitLab discussion id"),
+    commentId: z.number().int().positive().describe("REST id of the thread's first comment"),
+    action: z.enum(["resolve", "reply", "reply_resolve"]),
+    body: z.string().optional().describe("Required for reply and reply_resolve"),
+    enabled: z.boolean().optional().describe("Off skips the action on submit (default on)"),
+  })
+  .describe("An action on an existing review thread");
+
 const updateReviewSchema = z
   .object({
     summary: z.string().nullable().optional().describe("Top-level review summary"),
@@ -52,6 +62,10 @@ const updateReviewSchema = z
       )
       .nullable()
       .optional(),
+    threadActions: z
+      .array(ThreadActionSchema)
+      .optional()
+      .describe("Replies and resolves on existing review threads, run on submit"),
   })
   .describe("Partial update to a review draft");
 
@@ -87,6 +101,7 @@ const PrReviewSchema = z
     verdict: z.string().nullable(),
     summary: z.string().nullable(),
     fileComments: z.array(z.record(z.unknown())).nullable(),
+    threadActions: z.array(ThreadActionSchema).optional(),
     origin: z.string(),
     userEngaged: z.boolean(),
     autoSubmitted: z.boolean(),

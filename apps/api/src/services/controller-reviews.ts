@@ -4,6 +4,7 @@ import {
   parsePrUrl,
   type PrReviewVerdict,
   type PrReviewFileComment,
+  type PrReviewThreadAction,
 } from "@optio/shared";
 import type { ControllerPrincipal } from "./controller-auth.js";
 import { ControllerError, requireChange, requireManage, tenant } from "./controller-access.js";
@@ -52,6 +53,7 @@ export async function updateControllerReview(
     summary?: string | null;
     verdict?: PrReviewVerdict | null;
     fileComments?: PrReviewFileComment[] | null;
+    threadActions?: PrReviewThreadAction[];
   },
 ) {
   const row = await reviewTarget(p, id, true);
@@ -70,7 +72,12 @@ export async function controlControllerReview(
     if (!["ready", "stale"].includes(row.state))
       throw new ControllerError(409, `Cannot submit review in ${row.state} state`);
     const result = await reviews.submitReview(id, p.actor.userId ?? undefined);
-    return { id, state: result.review.state, reviewUrl: result.reviewUrl };
+    return {
+      id,
+      state: result.review.state,
+      reviewUrl: result.reviewUrl,
+      threadActionResults: result.threadActionResults,
+    };
   }
   await reviews.setControlIntent(id, action);
   return { id, action, accepted: true };

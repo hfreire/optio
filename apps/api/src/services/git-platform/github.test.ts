@@ -219,6 +219,66 @@ describe("GitHubPlatform", () => {
     });
   });
 
+  describe("review thread actions", () => {
+    it("replies through the comment replies endpoint", async () => {
+      mockJsonResponse({ id: 9 });
+
+      await platform.replyToReviewThread(
+        ri,
+        42,
+        { threadId: "PRRT_abc", commentId: 123 },
+        "Fixed in abc123",
+      );
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        "https://api.github.com/repos/acme/widgets/pulls/42/comments/123/replies",
+      );
+      expect(call[1].method).toBe("POST");
+      expect(JSON.parse(call[1].body)).toEqual({ body: "Fixed in abc123" });
+    });
+
+    it("resolves a thread with the GraphQL mutation", async () => {
+      mockJsonResponse({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+
+      await platform.resolveReviewThread(ri, 42, "PRRT_abc");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe("https://api.github.com/graphql");
+      const payload = JSON.parse(call[1].body);
+      expect(payload.query).toContain("resolveReviewThread");
+      expect(payload.variables).toEqual({ threadId: "PRRT_abc" });
+    });
+
+    it("posts GraphQL to /api/graphql on GitHub Enterprise", async () => {
+      mockJsonResponse({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+
+      await platform.resolveReviewThread(
+        { ...ri, apiBaseUrl: "https://ghe.example.com/api/v3" },
+        42,
+        "PRRT_abc",
+      );
+
+      expect(mockFetch.mock.calls[0][0]).toBe("https://ghe.example.com/api/graphql");
+    });
+
+    it("throws when GraphQL answers 200 with errors", async () => {
+      mockJsonResponse({ errors: [{ message: "Could not resolve to a node" }] });
+
+      await expect(platform.resolveReviewThread(ri, 42, "PRRT_bad")).rejects.toThrow(
+        /Could not resolve to a node/,
+      );
+    });
+
+    it("throws a GitHubApiError on an HTTP failure", async () => {
+      mockJsonResponse({ message: "Not Found" }, false, 404);
+
+      await expect(
+        platform.replyToReviewThread(ri, 42, { threadId: "t", commentId: 1 }, "x"),
+      ).rejects.toBeInstanceOf(GitHubApiError);
+    });
+  });
+
   describe("listIssues", () => {
     it("fetches issues and maps response", async () => {
       mockJsonResponse([
