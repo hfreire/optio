@@ -38,6 +38,7 @@ import { getRepoByUrl } from "./repo-service.js";
 import { getClaudeConfigSourceForRun, readClaudeConfigFiles } from "./claude-config-service.js";
 import {
   applyClaudeConfig,
+  CLAUDE_CONFIG_ENV_KEYS_ENV,
   CLAUDE_CONFIG_MANIFEST_ENV,
   CLAUDE_CONFIG_REPORT_ENV,
   claudeConfigManifestEnv,
@@ -534,6 +535,11 @@ async function applyClaudeConfigRepo(
   );
   setupFiles.splice(0, setupFiles.length, ...applied.setupFiles);
   env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv(applied.manifest);
+  if (applied.envKeys.length > 0) {
+    env[CLAUDE_CONFIG_ENV_KEYS_ENV] = Buffer.from(JSON.stringify(applied.envKeys)).toString(
+      "base64",
+    );
+  }
   if (applied.report) env[CLAUDE_CONFIG_REPORT_ENV] = applied.report;
   log.info({ sourceId: source.id, sha: source.resolvedSha }, "Injecting the Claude config repo");
 }

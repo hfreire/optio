@@ -89,15 +89,16 @@ export async function updateClaudeConfigSource(
   id: string,
   input: UpdateClaudeConfigSourceInput,
 ): Promise<ClaudeConfigSource | null> {
-  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  const updates: Partial<typeof claudeConfigSources.$inferInsert> = { updatedAt: new Date() };
   if (input.enabled !== undefined) updates.enabled = input.enabled;
   if (input.sourceUrl !== undefined) updates.sourceUrl = input.sourceUrl;
   if (input.ref !== undefined) updates.ref = input.ref.trim() || DEFAULT_REF;
   if (input.subpath !== undefined) updates.subpath = subpathOf(input.subpath);
-  // The change invalidates the resolved commit in the same statement, so the
-  // source is due at once and a sync of the old one still in flight records nothing.
+  // The last good snapshot keeps serving until the new location syncs. The
+  // cleared `lastSyncedAt` makes the source due at once, and a sync of the old
+  // location still in flight records nothing (`recordClaudeConfigSync`).
   if (input.sourceUrl !== undefined || input.ref !== undefined || input.subpath !== undefined) {
-    updates.resolvedSha = null;
+    updates.lastSyncedAt = null;
     updates.lastSyncError = null;
   }
   const [row] = await db

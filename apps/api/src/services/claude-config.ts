@@ -12,6 +12,7 @@ const CLAUDE_HOME = "/home/agent/.claude";
 const CLAUDE_SETTINGS_PATH = `${CLAUDE_HOME}/settings.json`;
 export const CLAUDE_CONFIG_MANIFEST_ENV = "OPTIO_CLAUDE_CONFIG_MANIFEST";
 export const CLAUDE_CONFIG_REPORT_ENV = "OPTIO_CLAUDE_CONFIG_REPORT";
+export const CLAUDE_CONFIG_ENV_KEYS_ENV = "OPTIO_CLAUDE_CONFIG_ENV_KEYS";
 
 export interface ClaudeConfigFile {
   relativePath: string;
@@ -287,6 +288,8 @@ export interface AppliedClaudeConfig {
   /** Injected paths relative to `~/.claude`; settings.json only when no adapter wrote it. */
   manifest: string[];
   setupFiles: SetupFile[];
+  /** The `env` keys of the written settings.json that came from the config repo. */
+  envKeys: string[];
   /** Value of `OPTIO_CLAUDE_CONFIG_REPORT`, null when there is nothing to log. */
   report: string | null;
 }
@@ -316,6 +319,7 @@ export function applyClaudeConfig(
   const setupFiles = [...existing];
   let executables: HookExecutable[] = [];
   let ownsSettings = false;
+  let envKeys: string[] = [];
 
   if (mapped.settings !== null) {
     const config = parseSettings(mapped.settings);
@@ -334,11 +338,15 @@ export function applyClaudeConfig(
       if (at >= 0) setupFiles[at] = settingsFile;
       else setupFiles.push(settingsFile);
       executables = hookExecutables(merged);
+      const baseEnv = isPlainObject(base.env) ? base.env : {};
+      envKeys = isPlainObject(merged.env)
+        ? Object.keys(merged.env).filter((k) => !(k in baseEnv))
+        : [];
       if (at < 0) ownsSettings = true;
     }
   }
   setupFiles.push(...mapped.setupFiles);
   const manifest = mapped.setupFiles.map((f) => f.path.slice(CLAUDE_HOME.length + 1));
   if (ownsSettings) manifest.push("settings.json");
-  return { setupFiles, manifest, report: claudeConfigReport(notes, executables) };
+  return { setupFiles, manifest, envKeys, report: claudeConfigReport(notes, executables) };
 }

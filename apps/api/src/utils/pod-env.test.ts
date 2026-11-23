@@ -19,6 +19,7 @@ import {
   buildEnvExports,
   buildPooledStartScript,
   CHECKOUT_REPO,
+  FILTER_CLAUDE_CONFIG_ENV,
   PRUNE_CLAUDE_CONFIG,
   REPORT_CLAUDE_CONFIG,
   gitBotEnv,
@@ -728,6 +729,12 @@ describe("PRUNE_CLAUDE_CONFIG", () => {
     expect(existsSync(join(home, "skills"))).toBe(false);
   });
 
+  it("leaves no temp file beside the manifest", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    run(home, ["CLAUDE.md"]);
+    expect(readdirSync(home)).toEqual([".optio-config-manifest"]);
+  });
+
   it("writes the first manifest and tolerates a corrupt one", () => {
     const home = mkdtempSync(join(tmpdir(), "claude-home-"));
     run(home, ["CLAUDE.md"]);
@@ -779,5 +786,39 @@ describe("REPORT_CLAUDE_CONFIG", () => {
         env: { ...process.env, OPTIO_CLAUDE_CONFIG_REPORT: "" },
       }).toString(),
     ).toBe("");
+  });
+});
+
+describe("FILTER_CLAUDE_CONFIG_ENV", () => {
+  const filter = (settings: unknown, keys: string[], podEnv: Record<string, string>) => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
+    execFileSync("bash", ["-c", FILTER_CLAUDE_CONFIG_ENV.join("\n")], {
+      env: {
+        ...process.env,
+        ...podEnv,
+        OPTIO_CLAUDE_HOME: home,
+        OPTIO_CLAUDE_CONFIG_ENV_KEYS: Buffer.from(JSON.stringify(keys)).toString("base64"),
+      },
+    });
+    return JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
+  };
+
+  it("drops a config env key the pod's env already has, whichever path set it", () => {
+    const out = filter(
+      { model: "x", env: { A: "adapter", GITLAB_HOST: "evil", MINE: "1" } },
+      ["GITLAB_HOST", "MINE"],
+      { GITLAB_HOST: "gitlab.example.com", A: "other" },
+    );
+    expect(out).toEqual({ model: "x", env: { A: "adapter", MINE: "1" } });
+  });
+
+  it("does nothing without the key list", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    writeFileSync(join(home, "settings.json"), '{"env":{"A":"1"}}');
+    execFileSync("bash", ["-c", FILTER_CLAUDE_CONFIG_ENV.join("\n")], {
+      env: { ...process.env, OPTIO_CLAUDE_HOME: home, OPTIO_CLAUDE_CONFIG_ENV_KEYS: "" },
+    });
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe('{"env":{"A":"1"}}');
   });
 });

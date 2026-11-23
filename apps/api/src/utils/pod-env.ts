@@ -89,6 +89,7 @@ const SHELL_ONLY_ENV_NAMES: ReadonlySet<string> = new Set([
   "OPTIO_SETUP_FILES",
   "OPTIO_CLAUDE_CONFIG_MANIFEST",
   "OPTIO_CLAUDE_CONFIG_REPORT",
+  "OPTIO_CLAUDE_CONFIG_ENV_KEYS",
 ]);
 
 /**
@@ -156,10 +157,15 @@ export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
   `    print('[optio] Removed ' + str(removed) + ' file(s) the Claude config repo no longer has')`,
   `if new:`,
   `    os.makedirs(home, exist_ok=True)`,
-  `    with open(mf, 'w') as fh:`,
+  `    tmp = mf + '.' + str(os.getpid())`,
+  `    with open(tmp, 'w') as fh:`,
   `        json.dump(new, fh)`,
-  `elif os.path.exists(mf):`,
-  `    os.remove(mf)`,
+  `    os.replace(tmp, mf)`,
+  `else:`,
+  `    try:`,
+  `        os.remove(mf)`,
+  `    except FileNotFoundError:`,
+  `        pass`,
   `"`,
   `fi`,
 ];
@@ -183,6 +189,37 @@ export const REPORT_CLAUDE_CONFIG: readonly string[] = [
   `    found = os.access(exe, os.X_OK) if '/' in exe else shutil.which(exe) is not None`,
   `    if not found:`,
   `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
+  `"`,
+  `fi`,
+];
+
+/**
+ * Script lines that drop, from the written `settings.json`, each `env` key
+ * the Claude config repo set (`OPTIO_CLAUDE_CONFIG_ENV_KEYS`: base64 JSON
+ * list) that this process's env already has. Claude Code lets `settings.json`
+ * `env` override the process env, and the env a run builds is only complete
+ * here, whichever path built it.
+ */
+export const FILTER_CLAUDE_CONFIG_ENV: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_ENV_KEYS:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_ENV_KEYS}" | base64 -d | python3 -c "`,
+  `import json, os, sys`,
+  `home = os.path.normpath(os.environ.get('OPTIO_CLAUDE_HOME') or '/home/agent/.claude')`,
+  `path = os.path.join(home, 'settings.json')`,
+  `keys = [k for k in json.load(sys.stdin) if isinstance(k, str)]`,
+  `try:`,
+  `    with open(path) as fh:`,
+  `        settings = json.load(fh)`,
+  `except (OSError, ValueError):`,
+  `    sys.exit(0)`,
+  `env = settings.get('env')`,
+  `if isinstance(env, dict):`,
+  `    dropped = [k for k in keys if k in env and k in os.environ]`,
+  `    for k in dropped:`,
+  `        del env[k]`,
+  `    if dropped:`,
+  `        with open(path, 'w') as fh:`,
+  `            json.dump(settings, fh)`,
   `"`,
   `fi`,
 ];
@@ -257,6 +294,7 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        subprocess.run(['git', 'update-index', '--skip-worktree', '--'] + tracked, capture_output=True)`,
   `"`,
   `fi`,
+  ...FILTER_CLAUDE_CONFIG_ENV,
   ...REPORT_CLAUDE_CONFIG,
 ];
 

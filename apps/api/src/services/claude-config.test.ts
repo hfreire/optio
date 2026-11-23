@@ -425,3 +425,20 @@ describe("selectClaudeConfigSource scoping", () => {
     expect(selectClaudeConfigSource(rows.slice(0, 1), null, null)).toBeNull();
   });
 });
+
+describe("applyClaudeConfig env keys", () => {
+  it("names the settings env keys that came from the config, not the adapter's", () => {
+    const out = applyClaudeConfig(
+      [
+        {
+          path: "/home/agent/.claude/settings.json",
+          content: JSON.stringify({ env: { A: "1" } }),
+        },
+      ],
+      [file("settings.json", JSON.stringify({ env: { A: "x", MINE: "1", GH_TOKEN: "y" } }))],
+      new Set(),
+      (k) => k === "GH_TOKEN",
+    );
+    expect(out.envKeys).toEqual(["MINE"]);
+  });
+});

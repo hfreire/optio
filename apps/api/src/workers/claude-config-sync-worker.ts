@@ -12,6 +12,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Queue, Worker } from "bullmq";
+import { z } from "zod";
 import { and, eq, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
 import { parseIntEnv } from "@optio/shared";
 import { logger } from "../logger.js";
@@ -50,6 +51,8 @@ const claudeConfigSyncQueue = new Queue("claude-config-sync", {
 });
 
 /** A sync-one found its source's lease held: retried by BullMQ with backoff. */
+const syncOneDataSchema = z.object({ id: z.string().uuid() });
+
 export class ClaudeConfigSyncBusyError extends Error {
   constructor(public readonly sourceId: string) {
     super(`Claude config source ${sourceId} is being synced by another instance; retrying`);
@@ -67,7 +70,7 @@ export async function processClaudeConfigSyncJob(job: {
       for (const id of ids) await enqueueClaudeConfigSync(id);
     });
   } else if (job.name === "sync-one") {
-    const { id } = job.data as { id: string };
+    const { id } = syncOneDataSchema.parse(job.data);
     const ran = await underPollerLease(`claude-config-sync:${id}`, async () => {
       await syncClaudeConfigOne(id);
       return true;
@@ -88,7 +91,7 @@ export function startClaudeConfigSyncWorker() {
 
   const worker = new Worker("claude-config-sync", (job) => processClaudeConfigSyncJob(job), {
     ...bullmqOpts,
-    concurrency: 1,
+    concurrency: 4,
   });
   worker.on("failed", (job, err) => {
     if (err instanceof ClaudeConfigSyncBusyError) {
@@ -116,6 +119,7 @@ export async function dueClaudeConfigIds(): Promise<string[]> {
     .where(
       or(
         isNull(claudeConfigSources.resolvedSha),
+        isNull(claudeConfigSources.lastSyncedAt),
         and(
           eq(claudeConfigSources.enabled, true),
           isNotNull(claudeConfigSources.resolvedSha),
@@ -163,7 +167,12 @@ export async function syncClaudeConfigOne(id: string): Promise<void> {
   let stage = "resolve the source ref";
   try {
     const sha = await resolveRefToSha(row.sourceUrl, row.ref);
-    if (row.resolvedSha === sha && !row.lastSyncError && (await claudeConfigFilesSynced(id, sha))) {
+    if (
+      row.resolvedSha === sha &&
+      row.lastSyncedAt &&
+      !row.lastSyncError &&
+      (await claudeConfigFilesSynced(id, sha))
+    ) {
       log.info({ sha }, "already synced at this commit; nothing to do");
       return;
     }

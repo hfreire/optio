@@ -640,6 +640,9 @@ describe("environmentOptions", () => {
         filesOf(env).find((f) => f.path === "/home/agent/.claude/settings.json")!.content,
       );
       expect(written.env).toEqual({ MINE: "1" });
+      expect(
+        JSON.parse(Buffer.from(env.OPTIO_CLAUDE_CONFIG_ENV_KEYS, "base64").toString()),
+      ).toEqual(["MINE"]);
     });
 
     it("prefers the repo's source over the workspace's", async () => {

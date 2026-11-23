@@ -320,4 +320,51 @@ describe("claude config sync worker", () => {
       .where(eq(claudeConfigSources.id, row.id));
     expect(after.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
   });
+
+  it("keeps serving the last snapshot after an edit until the new location syncs", async () => {
+    const { syncClaudeConfigOne, dueClaudeConfigIds } =
+      await import("./claude-config-sync-worker.js");
+    const { updateClaudeConfigSource } = await import("../services/claude-config-service.js");
+    const { ws, row } = await newSource();
+    await syncClaudeConfigOne(row.id);
+    expect(await dueClaudeConfigIds()).not.toContain(row.id);
+
+    await updateClaudeConfigSource(row.id, { subpath: "home" });
+    expect(await dueClaudeConfigIds()).toContain(row.id);
+    expect((await getClaudeConfigSourceForRun(null, ws.id))?.id).toBe(row.id);
+
+    await syncClaudeConfigOne(row.id);
+    expect(await dueClaudeConfigIds()).not.toContain(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    const files = await readClaudeConfigFiles(row.id, after.resolvedSha);
+    expect(files.map((f) => f.relativePath)).toContain("skills/tdd/SKILL.md");
+    expect(files.map((f) => f.relativePath)).not.toContain("hooks/guard.sh");
+  });
+
+  it("keeps the old snapshot and records the error when the new location fails", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const { updateClaudeConfigSource } = await import("../services/claude-config-service.js");
+    const { ws, row } = await newSource();
+    await syncClaudeConfigOne(row.id);
+    await updateClaudeConfigSource(row.id, { subpath: "nope" });
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.lastSyncError).toContain("nope");
+    expect(after.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
+    expect((await getClaudeConfigSourceForRun(null, ws.id))?.id).toBe(row.id);
+    expect(
+      (await readClaudeConfigFiles(row.id, after.resolvedSha)).map((f) => f.relativePath),
+    ).toContain("hooks/guard.sh");
+  });
+
+  it("rejects a sync-one job with no source id", async () => {
+    const { processClaudeConfigSyncJob } = await import("./claude-config-sync-worker.js");
+    await expect(processClaudeConfigSyncJob({ name: "sync-one", data: {} })).rejects.toThrow();
+  });
 });
