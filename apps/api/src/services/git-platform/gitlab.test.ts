@@ -661,6 +661,29 @@ describe("GitLabPlatform", () => {
       );
     });
 
+    it("follows pagination until a short page", async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({
+        id: `d${i}`,
+        notes: [{ id: i + 1, author: { username: "optio-bot" } }],
+      }));
+      mockJsonResponse({ username: "optio-bot" });
+      mockJsonResponse(full);
+      mockJsonResponse([{ id: "last", notes: [{ id: 999, author: { username: "optio-bot" } }] }]);
+
+      const res = await platform.listReviewThreads(ri, 7);
+
+      expect(res.threads).toHaveLength(101);
+      expect(mockFetch.mock.calls[2][0]).toContain("page=2");
+    });
+
+    it("gives up after 50 full pages", async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({ id: `d${i}`, notes: [{ id: i + 1 }] }));
+      mockJsonResponse({ username: "optio-bot" });
+      for (let i = 0; i < 50; i++) mockJsonResponse(full);
+
+      await expect(platform.listReviewThreads(ri, 7)).rejects.toThrow("too many discussions");
+    });
+
     it("replies with a note on the discussion", async () => {
       mockJsonResponse({});
 

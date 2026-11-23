@@ -53,6 +53,10 @@ export interface PrReviewThreadAction {
   body?: string;
   /** Off = skipped on submit. Absent means on. */
   enabled?: boolean;
+  /** Set once the reply landed, so a retry doesn't post it twice. */
+  replied?: boolean;
+  /** Set once the thread was resolved. */
+  resolved?: boolean;
 }
 
 export interface PrReviewThreadActionResult {

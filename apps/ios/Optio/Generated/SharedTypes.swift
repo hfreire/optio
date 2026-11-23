@@ -7816,6 +7816,10 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
     public let body: String?
     /// Off = skipped on submit. Absent means on.
     public let enabled: Bool?
+    /// Set once the reply landed, so a retry doesn't post it twice.
+    public let replied: Bool?
+    /// Set once the thread was resolved.
+    public let resolved: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case threadId = "threadId"
@@ -7823,6 +7827,8 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         case action = "action"
         case body = "body"
         case enabled = "enabled"
+        case replied = "replied"
+        case resolved = "resolved"
     }
 
     public init(
@@ -7830,13 +7836,17 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         commentId: Double,
         action: PrReviewThreadActionKind,
         body: String? = nil,
-        enabled: Bool? = nil
+        enabled: Bool? = nil,
+        replied: Bool? = nil,
+        resolved: Bool? = nil
     ) {
         self.threadId = threadId
         self.commentId = commentId
         self.action = action
         self.body = body
         self.enabled = enabled
+        self.replied = replied
+        self.resolved = resolved
     }
 }
 

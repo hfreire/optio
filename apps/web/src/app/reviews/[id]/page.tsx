@@ -8,7 +8,11 @@ import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
 import { classifyError, type PrReviewThreadAction } from "@optio/shared";
-import { ReviewThreadActions, submitToast } from "@/components/review-thread-actions";
+import {
+  ReviewThreadActions,
+  hasPendingThreadActions,
+  submitToast,
+} from "@/components/review-thread-actions";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LogViewer } from "@/components/log-viewer";
 import { AgentAvatar } from "@/components/agent-avatar";
@@ -229,6 +233,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
     try {
       const res = await api.submitPrReview(id);
       setReview(res.review);
+      setThreadActions(res.review.threadActions ?? []);
       const t = submitToast(res.threadActionResults);
       toast[t.kind](t.message);
     } catch (err: any) {
@@ -713,6 +718,17 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
                       <Button size="sm" onClick={handleSubmit} disabled={submitting || !verdict}>
                         {submitting ? <Loader2 className="animate-spin" /> : <Send />}
                         Submit Review
+                      </Button>
+                    )}
+                    {review.state === "submitted" && hasPendingThreadActions(threadActions) && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={handleSubmit}
+                        disabled={submitting}
+                      >
+                        {submitting ? <Loader2 className="animate-spin" /> : <Send />}
+                        Apply pending thread actions
                       </Button>
                     )}
                     {review.state === "submitted" && (

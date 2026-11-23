@@ -73,15 +73,13 @@ const formatPath = (path: Array<string | number>): string =>
   );
 
 /** Validate a person's or API client's list; throws a readable ThreadActionValidationError. */
-export const threadActionsSchema = {
-  parse(raw: unknown): PrReviewThreadAction[] {
-    const res = listSchema.safeParse(raw);
-    if (res.success) return res.data;
-    throw new ThreadActionValidationError(
-      res.error.issues.map((i) => `${formatPath(i.path)}: ${i.message}`).join("; "),
-    );
-  },
-};
+export function validateThreadActions(raw: unknown): PrReviewThreadAction[] {
+  const res = listSchema.safeParse(raw);
+  if (res.success) return res.data;
+  throw new ThreadActionValidationError(
+    res.error.issues.map((i) => `${formatPath(i.path)}: ${i.message}`).join("; "),
+  );
+}
 
 /** Strictly parse an agent's or user's `threadActions`, dropping invalid entries with a warning. */
 export function parseThreadActions(
@@ -115,6 +113,40 @@ export function hasEnabledThreadActions(actions: PrReviewThreadAction[]): boolea
   return actions.some((a) => a.enabled !== false);
 }
 
+/** An enabled action with a reply or resolve step still to do. */
+export function hasPendingThreadActions(actions: PrReviewThreadAction[]): boolean {
+  return actions.some(
+    (a) =>
+      a.enabled !== false &&
+      ((a.action !== "resolve" && !a.replied) || (a.action !== "reply" && !a.resolved)),
+  );
+}
+
+interface DraftContent {
+  verdict: string | null;
+  summary: string | null;
+  fileComments: Array<{ path?: string; body?: string }> | null;
+  threadActions: PrReviewThreadAction[] | null;
+}
+
+/** The draft would post no review at all, only act on threads. */
+export function isThreadsOnly(d: DraftContent): boolean {
+  return (
+    hasEnabledThreadActions(d.threadActions ?? []) &&
+    !d.summary?.trim() &&
+    !(d.fileComments ?? []).some((c) => c.path && c.body) &&
+    (d.verdict === "comment" || !d.verdict)
+  );
+}
+
+/** Only a person can submit this draft: unattended runs would do nothing with it. */
+export function awaitsPerson(d: DraftContent): boolean {
+  return (
+    isThreadsOnly(d) &&
+    !(d.threadActions ?? []).some((a) => a.enabled !== false && a.action === "reply" && !a.replied)
+  );
+}
+
 const normalizeLogin = (login: string): string => login.replace(/\[bot\]$/i, "").toLowerCase();
 
 type ThreadLookup = { viewerLogin: string; threads: ReviewThreadInfo[] };
@@ -143,19 +175,28 @@ export async function runThreadActions(
   ri: RepoIdentifier,
   prNumber: number,
   actions: PrReviewThreadAction[],
-  opts: { unattended?: boolean } = {},
+  opts: {
+    unattended?: boolean;
+    onStep?: (threadId: string, step: "replied" | "resolved") => void;
+  } = {},
 ): Promise<PrReviewThreadActionResult[]> {
   const results: PrReviewThreadActionResult[] = [];
+  const reply = platform.replyToReviewThread?.bind(platform);
+  const resolve = platform.resolveReviewThread?.bind(platform);
+  const list = platform.listReviewThreads?.bind(platform);
   let lookup: Promise<ThreadLookup> | null = null;
-  const lookupOnce = () => (lookup ??= platform.listReviewThreads!(ri, prNumber));
   for (const a of actions) {
     const base = { threadId: a.threadId, action: a.action };
     if (a.enabled === false) {
       results.push({ ...base, status: "skipped", error: "disabled" });
       continue;
     }
-    const needsReply = a.action !== "resolve";
-    const needsResolve = a.action !== "reply";
+    const needsReply = a.action !== "resolve" && !a.replied;
+    const needsResolve = a.action !== "reply" && !a.resolved;
+    if (!needsReply && !needsResolve) {
+      results.push({ ...base, status: "done" });
+      continue;
+    }
     if (opts.unattended && needsResolve) {
       results.push({
         ...base,
@@ -164,10 +205,7 @@ export async function runThreadActions(
       });
       continue;
     }
-    if (
-      (needsReply && !platform.replyToReviewThread) ||
-      (needsResolve && !platform.resolveReviewThread)
-    ) {
+    if ((needsReply && !reply) || (needsResolve && !resolve)) {
       results.push({
         ...base,
         status: "skipped",
@@ -175,7 +213,7 @@ export async function runThreadActions(
       });
       continue;
     }
-    if (!platform.listReviewThreads) {
+    if (!list) {
       results.push({
         ...base,
         status: "skipped",
@@ -184,20 +222,20 @@ export async function runThreadActions(
       continue;
     }
     try {
-      const refusal = vetThread(await lookupOnce(), a);
+      lookup ??= list(ri, prNumber);
+      const refusal = vetThread(await lookup, a);
       if (refusal) {
         results.push({ ...base, status: "failed", error: refusal });
         continue;
       }
-      if (needsReply) {
-        await platform.replyToReviewThread!(
-          ri,
-          prNumber,
-          { threadId: a.threadId, commentId: a.commentId },
-          a.body ?? "",
-        );
+      if (needsReply && reply) {
+        await reply(ri, prNumber, { threadId: a.threadId, commentId: a.commentId }, a.body ?? "");
+        opts.onStep?.(a.threadId, "replied");
       }
-      if (needsResolve) await platform.resolveReviewThread!(ri, prNumber, a.threadId);
+      if (needsResolve && resolve) {
+        await resolve(ri, prNumber, a.threadId);
+        opts.onStep?.(a.threadId, "resolved");
+      }
       results.push({ ...base, status: "done" });
     } catch (err) {
       results.push({ ...base, status: "failed", error: errorMessage(err) });

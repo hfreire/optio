@@ -1,6 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ReviewThreadActions, submitToast, threadHref } from "./review-thread-actions";
+import {
+  ReviewThreadActions,
+  hasPendingThreadActions,
+  submitToast,
+  threadHref,
+} from "./review-thread-actions";
 
 afterEach(cleanup);
 
@@ -80,4 +85,11 @@ it("toasts success, a warning for skipped actions and an error for failed ones",
   expect(
     submitToast([{ threadId: "a", action: "reply", status: "failed", error: "403" }]).kind,
   ).toBe("error");
+});
+
+it("flags a submitted review whose resolve is still pending", () => {
+  const reply = { threadId: "A", commentId: 1, action: "reply_resolve", body: "ok" } as const;
+  expect(hasPendingThreadActions([{ ...reply, replied: true }])).toBe(true);
+  expect(hasPendingThreadActions([{ ...reply, replied: true, resolved: true }])).toBe(false);
+  expect(hasPendingThreadActions([{ ...reply, enabled: false }])).toBe(false);
 });

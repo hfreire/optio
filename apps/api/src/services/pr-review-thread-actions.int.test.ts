@@ -384,3 +384,104 @@ describe("appendChatReplyFromRun", () => {
     expect(row.threadActions).toEqual([replyResolveB]);
   });
 });
+
+describe("retrying after a partial failure", () => {
+  const stored = async (id: string) =>
+    (await db.select().from(prReviews).where(eq(prReviews.id, id)))[0];
+
+  it("a threads-only retry resolves without replying twice", async () => {
+    vi.mocked(platform.resolveReviewThread!).mockRejectedValueOnce(new Error("blip"));
+    const review = await insertReview({ summary: "", threadActions: [replyResolveB] });
+    await expect(submitReview(review.id)).rejects.toBeInstanceOf(ThreadActionsNotAppliedError);
+    expect(calls).toEqual(["reply:B"]);
+    expect((await stored(review.id)).threadActions[0]).toMatchObject({ replied: true });
+    calls.length = 0;
+    await expect(submitReview(review.id)).resolves.toMatchObject({
+      review: { state: "submitted" },
+    });
+    expect(calls).toEqual(["resolve:B"]);
+  });
+
+  it("a person can finish what is left on a submitted review", async () => {
+    vi.mocked(platform.resolveReviewThread!).mockRejectedValueOnce(new Error("blip"));
+    const review = await insertReview({ summary: "s", threadActions: [replyResolveB] });
+    await submitReview(review.id);
+    expect((await stored(review.id)).state).toBe("submitted");
+    calls.length = 0;
+    const done = await submitReview(review.id, "u1");
+    expect(calls).toEqual(["resolve:B"]);
+    expect(done.review.threadActions[0]).toMatchObject({ replied: true, resolved: true });
+    await expect(submitReview(review.id, "u1")).rejects.toThrow("Cannot submit");
+  });
+
+  it("never lets an unattended run touch a submitted review", async () => {
+    const review = await insertReview({
+      state: "submitted",
+      summary: "s",
+      threadActions: [resolveA],
+    });
+    await expect(submitReview(review.id, undefined, { unattended: true })).rejects.toThrow(
+      "Cannot submit",
+    );
+  });
+
+  it("keeps recorded progress when the person edits the draft", async () => {
+    const review = await insertReview({
+      threadActions: [{ ...replyResolveB, replied: true }],
+    });
+    await updatePrReviewDraft(review.id, {
+      threadActions: [{ ...replyResolveB, body: "Fixed in abc" }],
+    });
+    expect((await stored(review.id)).threadActions[0]).toMatchObject({
+      body: "Fixed in abc",
+      replied: true,
+    });
+  });
+});
+
+describe("submit claim", () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+
+  it("is held until the review is submitted and released after", async () => {
+    const review = await insertReview({ summary: "s" });
+    await submitReview(review.id);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(row.submitClaimedAt).toBeNull();
+  });
+
+  it("refuses while a recent claim is held", async () => {
+    const review = await insertReview({ summary: "s", submitClaimedAt: minutesAgo(1) });
+    await expect(submitReview(review.id)).rejects.toThrow("already being submitted");
+  });
+
+  it("takes over a claim whose submit crashed", async () => {
+    const review = await insertReview({ summary: "s", submitClaimedAt: minutesAgo(11) });
+    await expect(submitReview(review.id)).resolves.toMatchObject({
+      review: { state: "submitted" },
+    });
+  });
+});
+
+describe("controller mappings", () => {
+  const principal = (workspaceId: string) =>
+    ({ actor: { workspaceId, userId: null, isAdmin: true }, access: "manage", name: "t" }) as never;
+
+  it("maps a bad draft to 400 and a nothing-posted submit to 409", async () => {
+    const { insertWorkspace } = await import("../test-utils/integration/fixtures.js");
+    const reviews = await import("./controller-reviews.js");
+    const ws = (await insertWorkspace()).id;
+    const review = await insertReview({
+      workspaceId: ws,
+      summary: "",
+      threadActions: [{ threadId: "OTHER_PR", commentId: 1, action: "resolve" }],
+    });
+    await expect(
+      reviews.updateControllerReview(principal(ws), review.id, {
+        threadActions: [resolveA, resolveA],
+      }),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringContaining("Duplicate") });
+    await expect(
+      reviews.controlControllerReview(principal(ws), review.id, "submit"),
+    ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Nothing") });
+  });
+});

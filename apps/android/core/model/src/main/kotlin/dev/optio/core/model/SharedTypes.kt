@@ -3667,6 +3667,10 @@ data class PrReviewThreadAction(
     val body: String? = null,
     /** Off = skipped on submit. Absent means on. */
     val enabled: Boolean? = null,
+    /** Set once the reply landed, so a retry doesn't post it twice. */
+    val replied: Boolean? = null,
+    /** Set once the thread was resolved. */
+    val resolved: Boolean? = null,
 )
 
 @Serializable

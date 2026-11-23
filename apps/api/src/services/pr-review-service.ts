@@ -47,10 +47,12 @@ import { isUniqueViolation } from "../utils/db-errors.js";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { logger } from "../logger.js";
 import {
-  hasEnabledThreadActions,
   parseThreadActions,
   runThreadActions,
-  threadActionsSchema,
+  validateThreadActions,
+  awaitsPerson,
+  hasPendingThreadActions,
+  isThreadsOnly,
   ThreadActionsNotAppliedError,
 } from "./pr-review-thread-actions.js";
 
@@ -734,7 +736,15 @@ export async function updatePrReviewDraft(
   if (updates.verdict !== undefined) patch.verdict = updates.verdict;
   if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
   if (updates.threadActions !== undefined) {
-    patch.threadActions = threadActionsSchema.parse(updates.threadActions);
+    const stored = current.threadActions ?? [];
+    patch.threadActions = validateThreadActions(updates.threadActions).map((a) => {
+      const prior = stored.find((p) => p.threadId === a.threadId && p.action === a.action);
+      return {
+        ...a,
+        ...(prior?.replied ? { replied: true } : {}),
+        ...(prior?.resolved ? { resolved: true } : {}),
+      };
+    });
   }
   const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
   return updated;
@@ -787,10 +797,12 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
   // Auto-submit if configured + still auto-origin + user hasn't engaged.
   const { getRepoByUrl } = await import("./repo-service.js");
   const repoConfig = await getRepoByUrl(review.repoUrl, review.workspaceId ?? undefined);
+  const [drafted] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
   if (
     review.origin === "auto" &&
     !review.userEngaged &&
-    repoConfig?.externalReviewMode === "on_pr_post"
+    repoConfig?.externalReviewMode === "on_pr_post" &&
+    !(drafted && awaitsPerson(drafted))
   ) {
     try {
       await submitReview(review.id, undefined, { unattended: true });
@@ -839,7 +851,11 @@ async function claimSubmit(id: string): Promise<boolean> {
     .where(
       and(
         eq(prReviews.id, id),
-        inArray(prReviews.state, [PrReviewState.READY, PrReviewState.STALE]),
+        inArray(prReviews.state, [
+          PrReviewState.READY,
+          PrReviewState.STALE,
+          PrReviewState.SUBMITTED,
+        ]),
         or(
           isNull(prReviews.submitClaimedAt),
           lt(prReviews.submitClaimedAt, new Date(Date.now() - SUBMIT_CLAIM_TTL_MS)),
@@ -865,17 +881,24 @@ export async function submitReview(
   const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
   if (!review) throw new Error("PR review not found");
   const submittable: PrReviewState[] = [PrReviewState.READY, PrReviewState.STALE];
-  if (!submittable.includes(review.state as PrReviewState)) {
+  const finishesPending =
+    review.state === PrReviewState.SUBMITTED &&
+    !opts.unattended &&
+    hasPendingThreadActions(review.threadActions ?? []);
+  if (!finishesPending && !submittable.includes(review.state as PrReviewState)) {
     throw new Error(`Cannot submit review in ${review.state} state`);
   }
   if (!(await claimSubmit(id))) throw new Error("Review is already being submitted");
 
+  let result: Awaited<ReturnType<typeof postReview>>;
   try {
-    return await postReview(review, userId, opts);
+    result = await postReview(review, userId, opts);
   } catch (err) {
     await releaseSubmit(id);
     throw err;
   }
+  await releaseSubmit(id);
+  return result;
 }
 
 async function postReview(
@@ -911,11 +934,8 @@ async function postReview(
 
   const threadActions = review.threadActions ?? [];
   const summary = review.summary?.trim() ?? "";
-  const threadsOnly =
-    hasEnabledThreadActions(threadActions) &&
-    !summary &&
-    comments.length === 0 &&
-    (review.verdict === "comment" || !review.verdict);
+  const alreadySubmitted = review.state === PrReviewState.SUBMITTED;
+  const threadsOnly = alreadySubmitted || isThreadsOnly(review);
 
   let reviewUrl: string | undefined;
   if (!threadsOnly) {
@@ -928,9 +948,20 @@ async function postReview(
     reviewUrl = result.url;
   }
 
+  const progress = new Map<string, { replied?: true; resolved?: true }>();
   const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
     unattended: opts.unattended,
+    onStep: (threadId, step) => progress.set(threadId, { ...progress.get(threadId), [step]: true }),
   });
+  if (progress.size > 0) {
+    await db
+      .update(prReviews)
+      .set({
+        threadActions: threadActions.map((a) => ({ ...a, ...progress.get(a.threadId) })),
+        updatedAt: new Date(),
+      })
+      .where(eq(prReviews.id, id));
+  }
   const failed = threadActionResults.filter((r) => r.status === "failed");
   if (failed.length > 0) {
     logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
@@ -939,6 +970,10 @@ async function postReview(
   if (threadsOnly && !threadActionResults.some((r) => r.status === "done")) {
     throw new ThreadActionsNotAppliedError(threadActionResults);
   }
+  if (alreadySubmitted) {
+    const [fresh] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+    return { review: fresh ?? review, threadActionResults };
+  }
 
   // Submitting settles the draft the person engaged with, so a later push can
   // still get an automatic follow-up draft (the repo's review mode decides).
@@ -946,7 +981,6 @@ async function postReview(
     .update(prReviews)
     .set({
       submittedAt: new Date(),
-      submitClaimedAt: null,
       updatedAt: new Date(),
       ...(review.origin === "auto" ? { userEngaged: false } : {}),
     })

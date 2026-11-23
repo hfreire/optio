@@ -4,8 +4,11 @@ import {
   parseThreadActions,
   runThreadActions,
   hasEnabledThreadActions,
+  hasPendingThreadActions,
+  awaitsPerson,
+  isThreadsOnly,
   threadActionSchema,
-  threadActionsSchema,
+  validateThreadActions,
   ThreadActionValidationError,
 } from "./pr-review-thread-actions.js";
 
@@ -112,16 +115,16 @@ describe("limits", () => {
   });
 });
 
-describe("threadActionsSchema", () => {
+describe("validateThreadActions", () => {
   it("rejects duplicates and oversize lists with a readable message", () => {
     const a = { threadId: "t", commentId: 1, action: "resolve" as const };
-    expect(() => threadActionsSchema.parse([a, a])).toThrow(ThreadActionValidationError);
-    expect(() => threadActionsSchema.parse([a, a])).toThrow("Duplicate threadId");
+    expect(() => validateThreadActions([a, a])).toThrow(ThreadActionValidationError);
+    expect(() => validateThreadActions([a, a])).toThrow("Duplicate threadId");
   });
 
   it("names the field in the message, not raw issue JSON", () => {
     try {
-      threadActionsSchema.parse([{ threadId: "t", commentId: 1, action: "reply" }]);
+      validateThreadActions([{ threadId: "t", commentId: 1, action: "reply" }]);
       expect.unreachable();
     } catch (err) {
       expect(err).toBeInstanceOf(ThreadActionValidationError);
@@ -356,5 +359,92 @@ describe("runThreadActions", () => {
     ]);
     expect(r).toMatchObject({ status: "skipped" });
     expect(r.error).toMatch(/not supported/);
+  });
+});
+
+describe("thread action progress", () => {
+  const base = { threadId: "a", commentId: 1 } as const;
+  const both: PrReviewThreadAction = { ...base, action: "reply_resolve", body: "Fixed" };
+
+  function platform() {
+    const calls: string[] = [];
+    const p = {
+      listReviewThreads: async () => ({
+        viewerLogin: "me",
+        threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: "me" }],
+      }),
+      replyToReviewThread: async () => {
+        calls.push("reply");
+      },
+      resolveReviewThread: async () => {
+        calls.push("resolve");
+      },
+    } as unknown as GitPlatform;
+    return { p, calls };
+  }
+
+  it("reports each step as it lands, even when a later one fails", async () => {
+    const { p } = platform();
+    p.resolveReviewThread = async () => {
+      throw new Error("nope");
+    };
+    const steps: string[] = [];
+    const [r] = await runThreadActions(p, ri, 5, [both], {
+      onStep: (id, step) => steps.push(`${id}:${step}`),
+    });
+    expect(steps).toEqual(["a:replied"]);
+    expect(r.status).toBe("failed");
+  });
+
+  it("skips a reply that already landed and only resolves", async () => {
+    const { p, calls } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [{ ...both, replied: true }]);
+    expect(calls).toEqual(["resolve"]);
+    expect(r.status).toBe("done");
+  });
+
+  it("treats a fully applied action as done without touching the platform", async () => {
+    const { p, calls } = platform();
+    const listSpy = vi.fn(p.listReviewThreads);
+    p.listReviewThreads = listSpy;
+    const [r] = await runThreadActions(p, ri, 5, [{ ...both, replied: true, resolved: true }]);
+    expect(r.status).toBe("done");
+    expect(calls).toEqual([]);
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  it("knows which drafts still have work", () => {
+    expect(hasPendingThreadActions([both])).toBe(true);
+    expect(hasPendingThreadActions([{ ...both, replied: true }])).toBe(true);
+    expect(hasPendingThreadActions([{ ...both, replied: true, resolved: true }])).toBe(false);
+    expect(hasPendingThreadActions([{ ...both, enabled: false }])).toBe(false);
+  });
+});
+
+describe("awaitsPerson", () => {
+  const draft = (threadActions: PrReviewThreadAction[], over = {}) => ({
+    verdict: "comment",
+    summary: "",
+    fileComments: [],
+    threadActions,
+    ...over,
+  });
+  const resolve: PrReviewThreadAction = { threadId: "a", commentId: 1, action: "resolve" };
+  const reply: PrReviewThreadAction = { threadId: "b", commentId: 2, action: "reply", body: "x" };
+
+  it("is true for a resolve-only draft that posts nothing", () => {
+    expect(isThreadsOnly(draft([resolve]))).toBe(true);
+    expect(awaitsPerson(draft([resolve]))).toBe(true);
+    expect(awaitsPerson(draft([{ ...resolve, action: "reply_resolve", body: "x" }]))).toBe(true);
+  });
+
+  it("is false when an unattended reply or a review post can still happen", () => {
+    expect(awaitsPerson(draft([resolve, reply]))).toBe(false);
+    expect(awaitsPerson(draft([resolve], { summary: "LGTM" }))).toBe(false);
+    expect(awaitsPerson(draft([resolve], { verdict: "approve" }))).toBe(false);
+  });
+
+  it("is true again once the only unattended reply has landed", () => {
+    expect(awaitsPerson(draft([resolve, { ...reply, replied: true }]))).toBe(true);
   });
 });

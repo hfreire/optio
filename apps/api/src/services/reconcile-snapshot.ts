@@ -1,4 +1,5 @@
 import { readPrReviews } from "./pr-review-state.js";
+import { awaitsPerson } from "./pr-review-thread-actions.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import {
@@ -596,7 +597,8 @@ async function buildPrReviewSnapshot(ref: RunRef): Promise<WorldSnapshot | null>
 
   // Auto-submit is encoded in repos.externalReviewMode === 'on_pr_post'.
   const repoRowFull = await db.select().from(repos).where(eq(repos.repoUrl, row.repoUrl)).limit(1);
-  const autoSubmitOnReady = repoRowFull[0]?.externalReviewMode === "on_pr_post";
+  const autoSubmitOnReady =
+    repoRowFull[0]?.externalReviewMode === "on_pr_post" && !awaitsPerson(row);
   const specWithAuto: PrReviewRunSpec = {
     ...run.spec,
     autoSubmitOnReady,

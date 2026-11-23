@@ -87,6 +87,15 @@ export function ReviewThreadActions({
   );
 }
 
+/** An enabled action whose reply or resolve step has not happened yet. */
+export function hasPendingThreadActions(actions: PrReviewThreadAction[]): boolean {
+  return actions.some(
+    (a) =>
+      a.enabled !== false &&
+      ((a.action !== "resolve" && !a.replied) || (a.action !== "reply" && !a.resolved)),
+  );
+}
+
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 /** Actions the person switched off are not worth a warning; refused or deferred ones are. */
