@@ -445,6 +445,7 @@ export async function buildAgentEnvironment(
     setupFiles.push(...buildSkillSetupFiles(skills));
     log.info({ count: skills.length, agentType }, "Injecting custom skills");
   }
+  const loadedSkillNames = new Set<string>();
   if (installed.length > 0) {
     const { readInstalledSkillFiles } = await import("../workers/skill-sync-worker.js");
     let injected = 0;
@@ -461,6 +462,7 @@ export async function buildAgentEnvironment(
           });
         }
         injected++;
+        loadedSkillNames.add(skill.name);
       } catch (err) {
         log.warn(
           { err, skillId: skill.id, name: skill.name },
@@ -472,7 +474,7 @@ export async function buildAgentEnvironment(
   }
 
   if (agentType === "claude-code" && !input.controllerOnly) {
-    await applyClaudeConfigRepo(input, setupFiles, installed, env, log);
+    await applyClaudeConfigRepo(input, setupFiles, loadedSkillNames, env, log);
   }
 
   if (agentType === "pi") {
@@ -507,7 +509,7 @@ export async function buildAgentEnvironment(
 async function applyClaudeConfigRepo(
   input: AgentEnvironmentInput,
   setupFiles: SetupFile[],
-  installed: InstalledSkillConfig[],
+  installedSkillNames: ReadonlySet<string>,
   env: Record<string, string>,
   log: Log,
 ): Promise<void> {
@@ -526,7 +528,7 @@ async function applyClaudeConfigRepo(
   const applied = applyClaudeConfig(
     setupFiles,
     files,
-    new Set(installed.map((s) => s.name)),
+    installedSkillNames,
     (key) =>
       key in (input.adapterEnv ?? {}) ||
       key in env ||

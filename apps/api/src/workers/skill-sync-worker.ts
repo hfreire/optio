@@ -322,8 +322,13 @@ export function skillGitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> {
+export async function resolveRefToSha(
+  sourceUrl: string,
+  ref: string,
+  opts: { strict?: { defaultRef: string } } = {},
+): Promise<string> {
   assertSkillSourceArgs(sourceUrl, ref);
+  if (opts.strict && /^[0-9a-f]{40}$/.test(ref)) return ref;
   // ls-remote returns "<sha>\trefs/heads/<branch>" lines. We try the requested
   // ref directly and fall back to bare HEAD if the ref doesn't exist.
   const { stdout } = await execFileP(
@@ -335,6 +340,9 @@ export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<s
   if (line) {
     const sha = line.split(/\s+/)[0];
     if (/^[0-9a-f]{40}$/.test(sha)) return sha;
+  }
+  if (opts.strict && ref !== "" && ref !== "HEAD" && ref !== opts.strict.defaultRef) {
+    throw new Error(`ref '${ref}' not found in ${redactSkillSource(sourceUrl)}`);
   }
   // Fallback: ls-remote with no ref returns HEAD.
   const head = await execFileP("git", ["ls-remote", "--", sourceUrl, "HEAD"], {
@@ -356,6 +364,7 @@ export async function cloneIntoScratch(
   sourceUrl: string,
   sha: string,
   log: { info: (...args: unknown[]) => void },
+  opts: { exact?: boolean } = {},
 ): Promise<string> {
   assertSkillSourceArgs(sourceUrl, "");
   await fs.mkdir(scratchDir(), { recursive: true });
@@ -379,7 +388,8 @@ export async function cloneIntoScratch(
         timeout: CLONE_TIMEOUT_MS,
         env: skillGitEnv(),
       });
-    } catch {
+    } catch (err) {
+      if (opts.exact) throw err;
       // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
       // the resolved branch should already be at the right SHA.
     }

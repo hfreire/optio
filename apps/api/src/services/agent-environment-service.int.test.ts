@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "../db/client.js";
-import { claudeConfigFiles, users } from "../db/schema.js";
+import { claudeConfigFiles, installedSkills, users } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
 import {
@@ -19,6 +19,7 @@ import { logger } from "../logger.js";
 import { createConnection, seedBuiltInProviders, updateConnection } from "./connection-service.js";
 import { createMcpServer } from "./mcp-server-service.js";
 import { createSkill } from "./skill-service.js";
+import { createInstalledSkill } from "./installed-skill-service.js";
 import { createClaudeConfigSource, recordClaudeConfigSync } from "./claude-config-service.js";
 
 const uniq = () => randomBytes(4).toString("hex");
@@ -579,6 +580,24 @@ describe("environmentOptions", () => {
       const env = await buildAgentEnvironment(input(w), logger, [bare]);
       const merged = JSON.parse(filesOf(env).find((f) => f.path === adapterSettings.path)!.content);
       expect(merged.model).toBe("haiku");
+    });
+
+    it("keeps the config's skill when the installed skill of that name failed to load", async () => {
+      const w = await world();
+      await synced(w.ws.id, undefined, [
+        { relativePath: "skills/tdd/SKILL.md", content: Buffer.from("cfg"), executable: false },
+      ]);
+      const skill = await createInstalledSkill(
+        { name: "tdd", sourceUrl: "https://github.com/acme/skills" },
+        w.ws.id,
+      );
+      await db
+        .update(installedSkills)
+        .set({ resolvedSha: "c".repeat(40) })
+        .where(eq(installedSkills.id, skill.id));
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(manifestOf(env)).toContain("skills/tdd/SKILL.md");
+      expect(env.OPTIO_CLAUDE_CONFIG_REPORT ?? "").not.toContain("installed skill");
     });
 
     it("lists what it injects, so the pod can prune what a later config drops", async () => {

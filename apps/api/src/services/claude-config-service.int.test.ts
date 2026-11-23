@@ -29,7 +29,7 @@ const reload = async (id: string) =>
   (await db.select().from(claudeConfigSources).where(eq(claudeConfigSources.id, id)))[0];
 
 describe("updateClaudeConfigSource", () => {
-  it.each([{ sourceUrl: "https://github.com/acme/other" }, { ref: "dev" }, { subpath: "home" }])(
+  it.each([{ ref: "dev" }, { subpath: "home" }])(
     "keeps the last good commit but marks the source pending when %j changes",
     async (change) => {
       const row = await syncedSource();
@@ -40,6 +40,15 @@ describe("updateClaudeConfigSource", () => {
       expect(after.lastSyncError).toBeNull();
     },
   );
+
+  it("stops serving the old repo's snapshot when the source URL changes", async () => {
+    const row = await syncedSource();
+    await updateClaudeConfigSource(row.id, { sourceUrl: "https://github.com/acme/other" });
+    const after = await reload(row.id);
+    expect(after.resolvedSha).toBeNull();
+    expect(after.lastSyncedAt).toBeNull();
+    expect(after.lastSyncError).toBeNull();
+  });
 
   it("leaves sync state alone when only enabled changes", async () => {
     const row = await syncedSource();

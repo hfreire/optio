@@ -11,7 +11,8 @@ import {
   type UpdateClaudeConfigSourceInput,
 } from "@optio/shared";
 
-const DEFAULT_REF = "main";
+export const DEFAULT_CLAUDE_CONFIG_REF = "main";
+const DEFAULT_REF = DEFAULT_CLAUDE_CONFIG_REF;
 
 /** The scope (workspace, or workspace + repo) already has a Claude config source. */
 export class ClaudeConfigScopeTakenError extends Error {
@@ -94,13 +95,15 @@ export async function updateClaudeConfigSource(
   if (input.sourceUrl !== undefined) updates.sourceUrl = input.sourceUrl;
   if (input.ref !== undefined) updates.ref = input.ref.trim() || DEFAULT_REF;
   if (input.subpath !== undefined) updates.subpath = subpathOf(input.subpath);
-  // The last good snapshot keeps serving until the new location syncs. The
+  // A ref or subpath edit keeps serving the last good snapshot until the new
+  // location syncs; another repo's snapshot must never be served. The
   // cleared `lastSyncedAt` makes the source due at once, and a sync of the old
   // location still in flight records nothing (`recordClaudeConfigSync`).
   if (input.sourceUrl !== undefined || input.ref !== undefined || input.subpath !== undefined) {
     updates.lastSyncedAt = null;
     updates.lastSyncError = null;
   }
+  if (input.sourceUrl !== undefined) updates.resolvedSha = null;
   const [row] = await db
     .update(claudeConfigSources)
     .set(updates)

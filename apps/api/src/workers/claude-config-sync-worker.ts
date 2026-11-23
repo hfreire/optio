@@ -26,6 +26,7 @@ import {
   CLAUDE_CONFIG_SYNC_SENTINEL,
   claudeConfigFilesSynced,
   recordClaudeConfigSync,
+  DEFAULT_CLAUDE_CONFIG_REF,
 } from "../services/claude-config-service.js";
 import {
   cloneIntoScratch,
@@ -166,7 +167,9 @@ export async function syncClaudeConfigOne(id: string): Promise<void> {
   let clone: string | null = null;
   let stage = "resolve the source ref";
   try {
-    const sha = await resolveRefToSha(row.sourceUrl, row.ref);
+    const sha = await resolveRefToSha(row.sourceUrl, row.ref, {
+      strict: { defaultRef: DEFAULT_CLAUDE_CONFIG_REF },
+    });
     if (
       row.resolvedSha === sha &&
       row.lastSyncedAt &&
@@ -178,7 +181,7 @@ export async function syncClaudeConfigOne(id: string): Promise<void> {
     }
 
     stage = "clone the source repository";
-    clone = await cloneIntoScratch(row.sourceUrl, sha, log);
+    clone = await cloneIntoScratch(row.sourceUrl, sha, log, { exact: true });
     stage = "read the config files";
     const dir = await skillDirIn(clone, row.subpath);
     if (!dir) throw new Error(`subpath '${row.subpath}' not found in source@${sha}`);

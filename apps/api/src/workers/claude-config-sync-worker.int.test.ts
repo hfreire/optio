@@ -284,6 +284,37 @@ describe("claude config sync worker", () => {
     expect(files[0].content.toString()).toBe("v2\n");
   });
 
+  it("resolves a commit sha ref to itself", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const { stdout } = await run("git", ["rev-parse", "HEAD"], { cwd: source });
+    const sha = stdout.trim();
+    const ws = await insertWorkspace();
+    const row = await createClaudeConfigSource({ sourceUrl: `file://${source}`, ref: sha }, ws.id);
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.lastSyncError).toBeNull();
+    expect(after.resolvedSha).toBe(sha);
+  });
+
+  it("fails on a ref that matches nothing instead of falling back to HEAD", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const ws = await insertWorkspace();
+    const row = await createClaudeConfigSource(
+      { sourceUrl: `file://${source}`, ref: "no-such-branch" },
+      ws.id,
+    );
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.resolvedSha).toBeNull();
+    expect(after.lastSyncError).toMatch(/no-such-branch/);
+  });
+
   it("skips a disabled source", async () => {
     const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
     const { row } = await newSource();
