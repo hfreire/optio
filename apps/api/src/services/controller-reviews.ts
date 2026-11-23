@@ -81,7 +81,7 @@ export async function controlControllerReview(
     if (!["ready", "stale"].includes(row.state))
       throw new ControllerError(409, `Cannot submit review in ${row.state} state`);
     const result = await reviews
-      .submitReview(id, p.actor.userId ?? undefined)
+      .submitReview(id, p.actor.userId ?? undefined, { unattended: true })
       .catch((err: unknown) => {
         if (err instanceof ThreadActionsNotAppliedError)
           throw new ControllerError(409, err.message);

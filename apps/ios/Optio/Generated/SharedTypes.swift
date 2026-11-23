@@ -7903,6 +7903,21 @@ public struct PrReviewThreadProgressItem: Codable, Hashable, Sendable {
 /// Which steps of each action ran, keyed by threadId; kept apart from the editable list.
 public typealias PrReviewThreadProgress = [String: PrReviewThreadProgressItem]
 
+public enum PrReviewThreadActionErrorKind: String, Codable, Hashable, Sendable, CaseIterable {
+    case rateLimit = "rate_limit"
+    case auth = "auth"
+    case transient = "transient"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [PrReviewThreadActionErrorKind] = [.rateLimit, .auth, .transient]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PrReviewThreadActionErrorKind(rawValue: raw) ?? .unknown
+    }
+}
+
 public struct PrReviewThreadActionResult: Codable, Hashable, Sendable {
     public enum Status: String, Codable, Hashable, Sendable, CaseIterable {
         case done = "done"
@@ -7923,24 +7938,28 @@ public struct PrReviewThreadActionResult: Codable, Hashable, Sendable {
     public let action: PrReviewThreadActionKind
     public let status: Status
     public let error: String?
+    public let errorKind: PrReviewThreadActionErrorKind?
 
     private enum CodingKeys: String, CodingKey {
         case threadId = "threadId"
         case action = "action"
         case status = "status"
         case error = "error"
+        case errorKind = "errorKind"
     }
 
     public init(
         threadId: String,
         action: PrReviewThreadActionKind,
         status: Status,
-        error: String? = nil
+        error: String? = nil,
+        errorKind: PrReviewThreadActionErrorKind? = nil
     ) {
         self.threadId = threadId
         self.action = action
         self.status = status
         self.error = error
+        self.errorKind = errorKind
     }
 }
 

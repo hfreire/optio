@@ -1,6 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ReviewThreadActions, submitToast, threadHref } from "./review-thread-actions";
+import {
+  ReviewThreadActions,
+  saveBeforeSubmit,
+  submitToast,
+  threadHref,
+} from "./review-thread-actions";
 
 afterEach(cleanup);
 
@@ -80,4 +85,12 @@ it("toasts success, a warning for skipped actions and an error for failed ones",
   expect(
     submitToast([{ threadId: "a", action: "reply", status: "failed", error: "403" }]).kind,
   ).toBe("error");
+});
+
+it("does not submit when saving the dirty draft fails", async () => {
+  expect(await saveBeforeSubmit(true, async () => false)).toBe(false);
+  expect(await saveBeforeSubmit(true, async () => true)).toBe(true);
+  const save = vi.fn(async () => false);
+  expect(await saveBeforeSubmit(false, save)).toBe(true);
+  expect(save).not.toHaveBeenCalled();
 });

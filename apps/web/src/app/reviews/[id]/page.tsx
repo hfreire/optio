@@ -8,7 +8,11 @@ import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
 import { classifyError, hasPendingThreadActions, type PrReviewThreadAction } from "@optio/shared";
-import { ReviewThreadActions, submitToast } from "@/components/review-thread-actions";
+import {
+  ReviewThreadActions,
+  saveBeforeSubmit,
+  submitToast,
+} from "@/components/review-thread-actions";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LogViewer } from "@/components/log-viewer";
 import { AgentAvatar } from "@/components/agent-avatar";
@@ -205,8 +209,9 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
         ? `CI ${prStatus.checksStatus} — merging anyway`
         : "";
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<boolean> => {
     setSaving(true);
+    let saved = false;
     try {
       const res = await api.updatePrReview(id, {
         summary,
@@ -217,14 +222,16 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
       setReview(res.review);
       setDirty(false);
       toast.success("Draft saved");
+      saved = true;
     } catch (err: any) {
       toast.error(err.message || "Failed to save");
     }
     setSaving(false);
+    return saved;
   };
 
   const handleSubmit = async () => {
-    if (dirty) await handleSave();
+    if (!(await saveBeforeSubmit(dirty, handleSave))) return;
     setSubmitting(true);
     try {
       const res = await api.submitPrReview(id);

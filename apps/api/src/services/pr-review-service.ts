@@ -973,6 +973,7 @@ async function postReview(
   }
 
   let applied = 0;
+  let firstActionError: unknown;
   const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
     unattended: opts.unattended,
     progress: review.threadActionProgress,
@@ -981,6 +982,9 @@ async function postReview(
       if (!userId || !platform.getViewerLogin) return [];
       const server = await getGitPlatformForRepo(review.repoUrl, { server: true });
       return [await server.platform.getViewerLogin!(server.ri)];
+    },
+    onError: (err) => {
+      firstActionError ??= err;
     },
     onStep: async (threadId, step, fingerprint) => {
       await recordProgress(id, threadId, step, fingerprint);
@@ -993,7 +997,7 @@ async function postReview(
   }
 
   if (threadsOnly && applied === 0 && !threadActionResults.some((r) => r.status === "done")) {
-    throw new ThreadActionsNotAppliedError(threadActionResults);
+    throw new ThreadActionsNotAppliedError(threadActionResults, firstActionError);
   }
   if (alreadySubmitted) {
     const [fresh] = await db.select().from(prReviews).where(eq(prReviews.id, id));

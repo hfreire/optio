@@ -92,6 +92,11 @@ vi.mock("./workflow-service.js", () => ({
 
 const mockEnqueueReconcile = vi.fn().mockResolvedValue(undefined);
 
+const mockSubmitReview = vi.fn();
+vi.mock("./pr-review-service.js", () => ({
+  submitReview: (...args: unknown[]) => mockSubmitReview(...args),
+}));
+
 vi.mock("./reconcile-queue.js", () => ({
   enqueueReconcile: (...args: unknown[]) => mockEnqueueReconcile(...args),
 }));
@@ -113,6 +118,7 @@ vi.mock("../logger.js", () => ({
 import { executeAction } from "./reconcile-executor.js";
 import { GitHubApiError } from "./git-platform/github.js";
 import { GitLabApiError, GitLabNotReadyError } from "./git-platform/gitlab.js";
+import { ThreadActionsNotAppliedError } from "./pr-review-thread-actions.js";
 
 // ─── Fixtures ───
 
@@ -244,6 +250,18 @@ function standaloneSnapshot(overrides: Partial<WorldSnapshot> = {}): WorldSnapsh
     readErrors: [],
     ...overrides,
   };
+}
+
+function prReviewSnapshot(reconcileAttempts: number): WorldSnapshot {
+  const base = standaloneSnapshot();
+  return {
+    ...base,
+    run: {
+      kind: "pr-review",
+      ref: { kind: "pr-review", id: "rev-1" },
+      status: { reconcileAttempts, reconcileBackoffUntil: null, updatedAt: BASE_VERSION },
+    },
+  } as unknown as WorldSnapshot;
 }
 
 // ─── Tests ───
@@ -1187,5 +1205,65 @@ describe("reconcile-executor — reattach and requeueRun", () => {
     );
     expect(outcome.status).toBe("stale");
     expect(mockTransitionWorkflowRunCas).toHaveBeenCalledTimes(1);
+  });
+
+  describe("auto-submit of thread actions", () => {
+    const notApplied = (cause?: unknown) =>
+      new ThreadActionsNotAppliedError(
+        [{ threadId: "t", action: "reply", status: "failed", error: "x" }],
+        cause,
+      );
+
+    it("honours a rate-limit cooldown carried by the failed thread action", async () => {
+      mockSubmitReview.mockRejectedValue(
+        notApplied(new GitHubApiError(429, "slow down", { retryAfterMs: 120000 })),
+      );
+      mockDbUpdate.mockReturnValue(chainable([]));
+
+      const outcome = await executeAction(
+        { kind: "submitReview", trigger: "auto", reason: "r" },
+        prReviewSnapshot(0),
+      );
+
+      expect(outcome.reason).toContain("github_cooldown");
+      const wake = mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number };
+      expect(wake.delayMs).toBeGreaterThanOrEqual(120000);
+    });
+
+    it("backs off exponentially on a transient failure", async () => {
+      mockSubmitReview.mockRejectedValue(notApplied(new GitHubApiError(502, "bad gateway")));
+      mockDbUpdate.mockReturnValue(chainable([]));
+
+      const first = await executeAction(
+        { kind: "submitReview", trigger: "auto", reason: "r" },
+        prReviewSnapshot(0),
+      );
+      const delay0 = (mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number }).delayMs;
+      await executeAction(
+        { kind: "submitReview", trigger: "auto", reason: "r" },
+        prReviewSnapshot(2),
+      );
+      const delay2 = (mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number }).delayMs;
+
+      expect(first).toMatchObject({ status: "applied", reason: "thread_actions_backoff" });
+      expect(delay0).toBe(30_000);
+      expect(delay2).toBe(120_000);
+    });
+
+    it("stops retrying after the attempt limit and leaves it for a person", async () => {
+      mockSubmitReview.mockRejectedValue(notApplied(new Error("boom")));
+      const chain = chainable([]);
+      mockDbUpdate.mockReturnValue(chain);
+
+      const outcome = await executeAction(
+        { kind: "submitReview", trigger: "auto", reason: "r" },
+        prReviewSnapshot(5),
+      );
+
+      expect(outcome).toMatchObject({ status: "applied", reason: "thread_actions_gave_up" });
+      expect((mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number }).delayMs).toBe(
+        24 * 3600_000,
+      );
+    });
   });
 });

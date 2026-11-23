@@ -87,6 +87,11 @@ export function ReviewThreadActions({
   );
 }
 
+/** A failed draft save must stop the submit, or the stored draft is posted instead of the edits. */
+export async function saveBeforeSubmit(dirty: boolean, save: () => Promise<boolean>) {
+  return !dirty || (await save());
+}
+
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 /** Actions the person switched off are not worth a warning; refused or deferred ones are. */

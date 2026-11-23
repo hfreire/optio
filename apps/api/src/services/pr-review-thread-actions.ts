@@ -4,12 +4,15 @@ import { hasPendingThreadActions as sharedHasPending, pendingThreadSteps } from 
 import type {
   GitPlatform,
   PrReviewThreadAction,
+  PrReviewThreadActionErrorKind,
   PrReviewThreadActionResult,
   PrReviewThreadProgress,
   RepoIdentifier,
   ReviewThreadInfo,
 } from "@optio/shared";
 import { logger as rootLogger } from "../logger.js";
+import { classifyGitHubFailure } from "./git-platform/github.js";
+import { classifyGitLabFailure } from "./git-platform/gitlab.js";
 
 type WarnLogger = Pick<typeof rootLogger, "warn">;
 
@@ -45,9 +48,13 @@ export const threadActionSchema = threadActionShape
 
 /** Nothing reached the platform: the review post was skipped and no thread action ran. */
 export class ThreadActionsNotAppliedError extends Error {
-  constructor(readonly results: PrReviewThreadActionResult[]) {
+  constructor(
+    readonly results: PrReviewThreadActionResult[],
+    cause?: unknown,
+  ) {
     super(
       `Nothing was submitted: ${results.map((r) => `${r.threadId} ${r.status}${r.error ? ` (${r.error})` : ""}`).join("; ")}`,
+      { cause },
     );
     this.name = "ThreadActionsNotAppliedError";
   }
@@ -218,6 +225,12 @@ function vetThread(
   };
 }
 
+const platformErrorKind = (err: unknown): PrReviewThreadActionErrorKind => {
+  const failure = classifyGitHubFailure(err) ?? classifyGitLabFailure(err);
+  if (!failure) return "transient";
+  return failure.kind === "auth" || failure.kind === "permission" ? "auth" : "rate_limit";
+};
+
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export type ThreadStep = "replied" | "resolved" | "refused" | "authorMismatch";
@@ -235,6 +248,7 @@ export async function runThreadActions(
     otherLogins?: () => Promise<string[]>;
     /** GitHub reviews Optio posted, whose inline comments start Optio's own threads. */
     postedReviewIds?: number[];
+    onError?: (err: unknown) => void;
     onStep?: (threadId: string, step: ThreadStep, fingerprint: string) => Promise<void> | void;
   } = {},
 ): Promise<PrReviewThreadActionResult[]> {
@@ -323,7 +337,13 @@ export async function runThreadActions(
       }
       results.push({ ...base, status: "done" });
     } catch (err) {
-      results.push({ ...base, status: "failed", error: errorMessage(err) });
+      opts.onError?.(err);
+      results.push({
+        ...base,
+        status: "failed",
+        error: errorMessage(err),
+        errorKind: platformErrorKind(err),
+      });
     }
   }
   return results;

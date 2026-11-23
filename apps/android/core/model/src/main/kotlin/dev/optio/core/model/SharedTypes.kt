@@ -3692,12 +3692,24 @@ data class PrReviewThreadProgressItem(
 /** Which steps of each action ran, keyed by threadId; kept apart from the editable list. */
 typealias PrReviewThreadProgress = Map<String, PrReviewThreadProgressItem>
 
+@Serializable(with = PrReviewThreadActionErrorKind.Companion::class)
+enum class PrReviewThreadActionErrorKind(override val raw: String) : RawEnum {
+    RATE_LIMIT("rate_limit"),
+    AUTH("auth"),
+    TRANSIENT("transient"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewThreadActionErrorKind>("dev.optio.core.model.PrReviewThreadActionErrorKind", entries, UNKNOWN)
+}
+
 @Serializable
 data class PrReviewThreadActionResult(
     val threadId: String,
     val action: PrReviewThreadActionKind,
     val status: Status,
     val error: String? = null,
+    val errorKind: PrReviewThreadActionErrorKind? = null,
 ) {
     @Serializable(with = Status.Companion::class)
     enum class Status(override val raw: String) : RawEnum {

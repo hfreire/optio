@@ -53,6 +53,7 @@ const SubmitErrorSchema = ErrorResponseSchema.extend({
         action: z.string(),
         status: z.enum(["done", "failed", "skipped"]),
         error: z.string().optional(),
+        errorKind: z.enum(["rate_limit", "auth", "transient"]).optional(),
       }),
     )
     .optional(),

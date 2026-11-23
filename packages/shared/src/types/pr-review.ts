@@ -93,11 +93,14 @@ export type PrReviewThreadProgress = Record<
   }
 >;
 
+export type PrReviewThreadActionErrorKind = "rate_limit" | "auth" | "transient";
+
 export interface PrReviewThreadActionResult {
   threadId: string;
   action: PrReviewThreadActionKind;
   status: "done" | "failed" | "skipped";
   error?: string;
+  errorKind?: PrReviewThreadActionErrorKind;
 }
 
 /**

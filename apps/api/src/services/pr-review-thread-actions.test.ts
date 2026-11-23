@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { GitHubApiError } from "./git-platform/github.js";
 import type { GitPlatform, PrReviewThreadAction, RepoIdentifier } from "@optio/shared";
 import {
   parseThreadActions,
@@ -167,6 +168,28 @@ describe("runThreadActions", () => {
     } as unknown as GitPlatform;
     return { p, calls };
   }
+
+  it("keeps the platform error kind and reports the raw error", async () => {
+    const kinds: Array<[Error, string]> = [
+      [new GitHubApiError(429, "slow down", {}), "rate_limit"],
+      [new GitHubApiError(401, "bad credentials", {}), "auth"],
+      [new GitHubApiError(502, "bad gateway", {}), "transient"],
+      [new Error("socket hang up"), "transient"],
+    ];
+    for (const [err, kind] of kinds) {
+      const { p } = platform({ replyToReviewThread: vi.fn(async () => Promise.reject(err)) });
+      const seen: unknown[] = [];
+      const [r] = await runThreadActions(
+        p,
+        ri,
+        5,
+        [{ threadId: "a", commentId: 1, action: "reply", body: "x" }],
+        { onError: (e) => seen.push(e) },
+      );
+      expect(r).toMatchObject({ status: "failed", errorKind: kind });
+      expect(seen).toEqual([err]);
+    }
+  });
 
   it("replies before resolving for reply_resolve, in list order", async () => {
     const { p, calls } = platform();
