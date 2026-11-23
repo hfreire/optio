@@ -33,6 +33,20 @@ async function fixture() {
   return { ws, wf, trigger };
 }
 describe("durable trigger deliveries", () => {
+  it("delivers a fresh occurrence even when the host clock runs behind the database", async () => {
+    const { trigger, wf } = await fixture();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() - 60_000);
+      const result = await fireTriggerDurably(trigger, { source: "webhook" });
+      expect(result).toMatchObject({ kind: "workflow_run" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const runs = await db.select().from(workflowRuns).where(eq(workflowRuns.workflowId, wf.id));
+    expect(runs).toHaveLength(1);
+  });
+
   it("deduplicates concurrent receipts in Postgres and keeps unmatched events durable until processed", async () => {
     const key = randomUUID();
     const results = await Promise.all(
