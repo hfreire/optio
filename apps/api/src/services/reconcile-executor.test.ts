@@ -93,8 +93,10 @@ vi.mock("./workflow-service.js", () => ({
 const mockEnqueueReconcile = vi.fn().mockResolvedValue(undefined);
 
 const mockSubmitReview = vi.fn();
+const mockPark = vi.fn();
 vi.mock("./pr-review-service.js", () => ({
   submitReview: (...args: unknown[]) => mockSubmitReview(...args),
+  parkThreadActionsForPerson: (...args: unknown[]) => mockPark(...args),
 }));
 
 vi.mock("./reconcile-queue.js", () => ({
@@ -1250,7 +1252,7 @@ describe("reconcile-executor — reattach and requeueRun", () => {
       expect(delay2).toBe(120_000);
     });
 
-    it("stops retrying after the attempt limit and leaves it for a person", async () => {
+    it("parks the actions for a person after the attempt limit, without blocking the review", async () => {
       mockSubmitReview.mockRejectedValue(notApplied(new Error("boom")));
       const chain = chainable([]);
       mockDbUpdate.mockReturnValue(chain);
@@ -1261,9 +1263,9 @@ describe("reconcile-executor — reattach and requeueRun", () => {
       );
 
       expect(outcome).toMatchObject({ status: "applied", reason: "thread_actions_gave_up" });
-      expect((mockEnqueueReconcile.mock.calls.at(-1)?.[1] as { delayMs: number }).delayMs).toBe(
-        24 * 3600_000,
-      );
+      expect(mockPark).toHaveBeenCalledWith("rev-1");
+      expect(mockEnqueueReconcile).not.toHaveBeenCalled();
+      expect(mockDbUpdate).not.toHaveBeenCalled();
     });
   });
 });

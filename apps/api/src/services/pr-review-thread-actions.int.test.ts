@@ -42,9 +42,14 @@ vi.mock("./git-token-service.js", async (importOriginal) => ({
   })),
 }));
 
-const { parseReviewOutput, submitReview, updatePrReviewDraft, appendChatReplyFromRun } =
-  await import("./pr-review-service.js");
-const { ThreadActionsNotAppliedError, threadActionFingerprint, withProgress } =
+const {
+  parseReviewOutput,
+  parkThreadActionsForPerson,
+  submitReview,
+  updatePrReviewDraft,
+  appendChatReplyFromRun,
+} = await import("./pr-review-service.js");
+const { ThreadActionsNotAppliedError, awaitsPerson, threadActionFingerprint, withProgress } =
   await import("./pr-review-thread-actions.js");
 const { hasPendingThreadActions: hasPending } = await import("./pr-review-thread-actions.js");
 const runLogService = await import("./run-log-service.js");
@@ -385,6 +390,18 @@ describe("submitReview unattended", () => {
     expect(result.threadActionResults[0].error).toContain("pending");
     const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
     expect(row.threadActions).toHaveLength(3);
+  });
+});
+
+describe("parkThreadActionsForPerson", () => {
+  it("makes the draft await a person and still lets a person submit it", async () => {
+    const reply: PrReviewThreadAction = { threadId: "A", commentId: 1, action: "reply", body: "x" };
+    const review = await insertReview({ threadActions: [reply] });
+    await parkThreadActionsForPerson(review.id);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(awaitsPerson(row)).toBe(true);
+    const result = await submitReview(review.id);
+    expect(result.threadActionResults[0].status).toBe("done");
   });
 });
 

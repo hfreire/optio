@@ -22,6 +22,7 @@ import {
   normalizeRepoUrl,
   parsePrUrl,
   parseRepoUrl,
+  pendingThreadSteps,
   type PrReviewRunKind,
   type PrReviewVerdict,
   type PrReviewOrigin,
@@ -54,6 +55,7 @@ import {
   hasPendingThreadActions,
   isThreadsOnly,
   withProgress,
+  threadActionFingerprint,
   ThreadActionsNotAppliedError,
   type ThreadStep,
 } from "./pr-review-thread-actions.js";
@@ -691,6 +693,17 @@ export async function enqueueReviewRun(
   );
 
   return run;
+}
+
+/** Stops unattended retries: an author-mismatched reply is skipped by auto-submit and left for a person. */
+export async function parkThreadActionsForPerson(id: string): Promise<void> {
+  const review = await getPrReview(id);
+  if (!review) return;
+  for (const a of review.threadActions) {
+    if (a.action !== "resolve" && pendingThreadSteps(a).reply && !a.authorMismatch) {
+      await recordProgress(id, a.threadId, "authorMismatch", threadActionFingerprint(a));
+    }
+  }
 }
 
 // ── Get / update ────────────────────────────────────────────────────────────

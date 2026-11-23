@@ -1100,7 +1100,6 @@ async function applySubmitReview(snapshot: WorldSnapshot): Promise<ExecuteOutcom
 
 const THREAD_ACTIONS_BACKOFF_BASE_MS = 30_000;
 const THREAD_ACTIONS_MAX_ATTEMPTS = 5;
-const THREAD_ACTIONS_GIVE_UP_MS = 24 * 3600_000;
 
 async function backOffThreadActions(
   snapshot: WorldSnapshot,
@@ -1108,19 +1107,18 @@ async function backOffThreadActions(
 ): Promise<ExecuteOutcome> {
   const run = snapshot.run;
   const attempts = run.status.reconcileAttempts ?? 0;
-  const gaveUp = attempts >= THREAD_ACTIONS_MAX_ATTEMPTS;
-  const delayMs = gaveUp
-    ? THREAD_ACTIONS_GIVE_UP_MS
-    : THREAD_ACTIONS_BACKOFF_BASE_MS * 2 ** attempts;
+  if (attempts >= THREAD_ACTIONS_MAX_ATTEMPTS) {
+    const { parkThreadActionsForPerson } = await import("./pr-review-service.js");
+    await parkThreadActionsForPerson(run.ref.id);
+    return { status: "applied", reason: "thread_actions_gave_up" };
+  }
+  const delayMs = THREAD_ACTIONS_BACKOFF_BASE_MS * 2 ** attempts;
   await persistGithubCooldown("pr-review", run.ref.id, Date.now() + delayMs, {
-    incrementAttempts: !gaveUp,
+    incrementAttempts: true,
     errorMessage: err.message,
   });
   await enqueueReconcile(run.ref, { reason: "thread_actions_backoff", delayMs });
-  return {
-    status: "applied",
-    reason: gaveUp ? "thread_actions_gave_up" : "thread_actions_backoff",
-  };
+  return { status: "applied", reason: "thread_actions_backoff" };
 }
 
 async function applyMarkStale(snapshot: WorldSnapshot): Promise<ExecuteOutcome> {
