@@ -7816,10 +7816,12 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
     public let body: String?
     /// Off = skipped on submit. Absent means on.
     public let enabled: Bool?
-    /// Set once the reply landed, so a retry doesn't post it twice.
+    /// Read-only progress merged in by the API: the reply landed.
     public let replied: Bool?
-    /// Set once the thread was resolved.
+    /// Read-only: the thread was resolved.
     public let resolved: Bool?
+    /// Read-only: refused as not this account's thread on this PR; never retried.
+    public let refused: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case threadId = "threadId"
@@ -7829,6 +7831,7 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         case enabled = "enabled"
         case replied = "replied"
         case resolved = "resolved"
+        case refused = "refused"
     }
 
     public init(
@@ -7838,7 +7841,8 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         body: String? = nil,
         enabled: Bool? = nil,
         replied: Bool? = nil,
-        resolved: Bool? = nil
+        resolved: Bool? = nil,
+        refused: Bool? = nil
     ) {
         self.threadId = threadId
         self.commentId = commentId
@@ -7847,8 +7851,30 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         self.enabled = enabled
         self.replied = replied
         self.resolved = resolved
+        self.refused = refused
     }
 }
+
+public struct PrReviewThreadProgressItem: Codable, Hashable, Sendable {
+    public let replied: Bool?
+    public let resolved: Bool?
+    public let refused: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case replied = "replied"
+        case resolved = "resolved"
+        case refused = "refused"
+    }
+
+    public init(replied: Bool? = nil, resolved: Bool? = nil, refused: Bool? = nil) {
+        self.replied = replied
+        self.resolved = resolved
+        self.refused = refused
+    }
+}
+
+/// Which steps of each action ran, keyed by threadId; kept apart from the editable list.
+public typealias PrReviewThreadProgress = [String: PrReviewThreadProgressItem]
 
 public struct PrReviewThreadActionResult: Codable, Hashable, Sendable {
     public enum Status: String, Codable, Hashable, Sendable, CaseIterable {

@@ -92,4 +92,5 @@ it("flags a submitted review whose resolve is still pending", () => {
   expect(hasPendingThreadActions([{ ...reply, replied: true }])).toBe(true);
   expect(hasPendingThreadActions([{ ...reply, replied: true, resolved: true }])).toBe(false);
   expect(hasPendingThreadActions([{ ...reply, enabled: false }])).toBe(false);
+  expect(hasPendingThreadActions([{ ...reply, refused: true }])).toBe(false);
 });

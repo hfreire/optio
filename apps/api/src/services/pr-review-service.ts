@@ -53,6 +53,7 @@ import {
   awaitsPerson,
   hasPendingThreadActions,
   isThreadsOnly,
+  withProgress,
   ThreadActionsNotAppliedError,
 } from "./pr-review-thread-actions.js";
 
@@ -695,7 +696,7 @@ export async function enqueueReviewRun(
 
 export async function getPrReview(id: string): Promise<PrReview | null> {
   const [row] = await db.select().from(prReviews).where(eq(prReviews.id, id));
-  return row ?? null;
+  return row ? withProgress(row) : null;
 }
 
 export async function listPrReviewRuns(prReviewId: string): Promise<PrReviewRun[]> {
@@ -736,18 +737,10 @@ export async function updatePrReviewDraft(
   if (updates.verdict !== undefined) patch.verdict = updates.verdict;
   if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
   if (updates.threadActions !== undefined) {
-    const stored = current.threadActions ?? [];
-    patch.threadActions = validateThreadActions(updates.threadActions).map((a) => {
-      const prior = stored.find((p) => p.threadId === a.threadId && p.action === a.action);
-      return {
-        ...a,
-        ...(prior?.replied ? { replied: true } : {}),
-        ...(prior?.resolved ? { resolved: true } : {}),
-      };
-    });
+    patch.threadActions = validateThreadActions(updates.threadActions);
   }
   const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
-  return updated;
+  return withProgress(updated);
 }
 
 // ── Parse agent output ──────────────────────────────────────────────────────
@@ -775,7 +768,10 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
   if (typeof parsed?.summary === "string") updates.summary = parsed.summary;
   if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
   const threadActions = parsed ? parseThreadActions(parsed.threadActions) : null;
-  if (threadActions) updates.threadActions = threadActions;
+  if (threadActions) {
+    updates.threadActions = threadActions;
+    updates.threadActionProgress = {};
+  }
 
   // Fall back to the run's result summary if we couldn't parse JSON, unless
   // the draft deliberately has no summary because it only acts on threads.
@@ -841,33 +837,53 @@ function extractVerdictJson(
 
 // ── Submit review ──────────────────────────────────────────────────────────
 
+/** One atomic UPDATE per step, so concurrent edits and other steps never overwrite it. */
+async function recordProgress(
+  id: string,
+  threadId: string,
+  step: "replied" | "resolved" | "refused",
+): Promise<void> {
+  const patch = JSON.stringify({ [step]: true });
+  await db
+    .update(prReviews)
+    .set({
+      threadActionProgress: sql`${prReviews.threadActionProgress} || jsonb_build_object(${threadId}::text, COALESCE(${prReviews.threadActionProgress} -> ${threadId}::text, '{}'::jsonb) || ${patch}::jsonb)`,
+    })
+    .where(eq(prReviews.id, id));
+}
+
 const SUBMIT_CLAIM_TTL_MS = 10 * 60 * 1000;
 
-/** Atomically take the right to submit; a crashed submit's claim expires. */
-async function claimSubmit(id: string): Promise<boolean> {
-  const rows = await db
+/**
+ * Atomically take the right to submit a review in the state we read; a crashed
+ * submit's claim expires. Returns the claimed row, or null when someone else
+ * holds it or the state moved.
+ */
+async function claimSubmit(id: string, state: PrReviewState): Promise<PrReview | null> {
+  const [row] = await db
     .update(prReviews)
     .set({ submitClaimedAt: new Date() })
     .where(
       and(
         eq(prReviews.id, id),
-        inArray(prReviews.state, [
-          PrReviewState.READY,
-          PrReviewState.STALE,
-          PrReviewState.SUBMITTED,
-        ]),
+        eq(prReviews.state, state),
         or(
           isNull(prReviews.submitClaimedAt),
           lt(prReviews.submitClaimedAt, new Date(Date.now() - SUBMIT_CLAIM_TTL_MS)),
         ),
       ),
     )
-    .returning({ id: prReviews.id });
-  return rows.length > 0;
+    .returning();
+  return row ?? null;
 }
 
-const releaseSubmit = (id: string) =>
-  db.update(prReviews).set({ submitClaimedAt: null }).where(eq(prReviews.id, id));
+async function releaseSubmit(id: string): Promise<void> {
+  try {
+    await db.update(prReviews).set({ submitClaimedAt: null }).where(eq(prReviews.id, id));
+  } catch (err) {
+    logger.warn({ err, prReviewId: id }, "Failed to release the submit claim; it will expire");
+  }
+}
 
 export async function submitReview(
   id: string,
@@ -878,27 +894,24 @@ export async function submitReview(
   reviewUrl?: string;
   threadActionResults: PrReviewThreadActionResult[];
 }> {
-  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
-  if (!review) throw new Error("PR review not found");
-  const submittable: PrReviewState[] = [PrReviewState.READY, PrReviewState.STALE];
-  const finishesPending =
-    review.state === PrReviewState.SUBMITTED &&
-    !opts.unattended &&
-    hasPendingThreadActions(review.threadActions ?? []);
-  if (!finishesPending && !submittable.includes(review.state as PrReviewState)) {
-    throw new Error(`Cannot submit review in ${review.state} state`);
+  const [seen] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!seen) throw new Error("PR review not found");
+  const state = seen.state as PrReviewState;
+  const finishing = state === PrReviewState.SUBMITTED && !opts.unattended;
+  if (!finishing && state !== PrReviewState.READY && state !== PrReviewState.STALE) {
+    throw new Error(`Cannot submit review in ${state} state`);
   }
-  if (!(await claimSubmit(id))) throw new Error("Review is already being submitted");
+  const review = await claimSubmit(id, state);
+  if (!review) throw new Error("Review is already being submitted or changed state");
 
-  let result: Awaited<ReturnType<typeof postReview>>;
   try {
-    result = await postReview(review, userId, opts);
-  } catch (err) {
+    if (finishing && !hasPendingThreadActions(review)) {
+      throw new Error(`Cannot submit review in ${state} state`);
+    }
+    return await postReview(review, userId, opts);
+  } finally {
     await releaseSubmit(id);
-    throw err;
   }
-  await releaseSubmit(id);
-  return result;
 }
 
 async function postReview(
@@ -948,20 +961,11 @@ async function postReview(
     reviewUrl = result.url;
   }
 
-  const progress = new Map<string, { replied?: true; resolved?: true }>();
   const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
     unattended: opts.unattended,
-    onStep: (threadId, step) => progress.set(threadId, { ...progress.get(threadId), [step]: true }),
+    progress: review.threadActionProgress,
+    onStep: (threadId, step) => recordProgress(id, threadId, step),
   });
-  if (progress.size > 0) {
-    await db
-      .update(prReviews)
-      .set({
-        threadActions: threadActions.map((a) => ({ ...a, ...progress.get(a.threadId) })),
-        updatedAt: new Date(),
-      })
-      .where(eq(prReviews.id, id));
-  }
   const failed = threadActionResults.filter((r) => r.status === "failed");
   if (failed.length > 0) {
     logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
@@ -972,7 +976,7 @@ async function postReview(
   }
   if (alreadySubmitted) {
     const [fresh] = await db.select().from(prReviews).where(eq(prReviews.id, id));
-    return { review: fresh ?? review, threadActionResults };
+    return { review: withProgress(fresh ?? review), threadActionResults };
   }
 
   // Submitting settles the draft the person engaged with, so a later push can
@@ -989,7 +993,7 @@ async function postReview(
     userId,
   });
 
-  return { review: updated ?? review, reviewUrl, threadActionResults };
+  return { review: withProgress(updated ?? review), reviewUrl, threadActionResults };
 }
 
 // ── Re-review ──────────────────────────────────────────────────────────────

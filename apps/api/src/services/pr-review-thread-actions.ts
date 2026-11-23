@@ -3,6 +3,7 @@ import type {
   GitPlatform,
   PrReviewThreadAction,
   PrReviewThreadActionResult,
+  PrReviewThreadProgress,
   RepoIdentifier,
   ReviewThreadInfo,
 } from "@optio/shared";
@@ -113,21 +114,37 @@ export function hasEnabledThreadActions(actions: PrReviewThreadAction[]): boolea
   return actions.some((a) => a.enabled !== false);
 }
 
+type ProgressRow = {
+  threadActions: PrReviewThreadAction[] | null;
+  threadActionProgress: PrReviewThreadProgress | null;
+};
+
+/** The editable list with each action's recorded progress merged in. */
+export function withProgress<T extends ProgressRow>(
+  row: T,
+): T & { threadActions: PrReviewThreadAction[] } {
+  const progress = row.threadActionProgress ?? {};
+  return {
+    ...row,
+    threadActions: (row.threadActions ?? []).map((a) => ({ ...a, ...progress[a.threadId] })),
+  };
+}
+
 /** An enabled action with a reply or resolve step still to do. */
-export function hasPendingThreadActions(actions: PrReviewThreadAction[]): boolean {
-  return actions.some(
+export function hasPendingThreadActions(row: ProgressRow): boolean {
+  return withProgress(row).threadActions.some(
     (a) =>
       a.enabled !== false &&
+      !a.refused &&
       ((a.action !== "resolve" && !a.replied) || (a.action !== "reply" && !a.resolved)),
   );
 }
 
-interface DraftContent {
+type DraftContent = ProgressRow & {
   verdict: string | null;
   summary: string | null;
   fileComments: Array<{ path?: string; body?: string }> | null;
-  threadActions: PrReviewThreadAction[] | null;
-}
+};
 
 /** The draft would post no review at all, only act on threads. */
 export function isThreadsOnly(d: DraftContent): boolean {
@@ -143,7 +160,9 @@ export function isThreadsOnly(d: DraftContent): boolean {
 export function awaitsPerson(d: DraftContent): boolean {
   return (
     isThreadsOnly(d) &&
-    !(d.threadActions ?? []).some((a) => a.enabled !== false && a.action === "reply" && !a.replied)
+    !withProgress(d).threadActions.some(
+      (a) => a.enabled !== false && a.action === "reply" && !a.replied && !a.refused,
+    )
   );
 }
 
@@ -177,7 +196,8 @@ export async function runThreadActions(
   actions: PrReviewThreadAction[],
   opts: {
     unattended?: boolean;
-    onStep?: (threadId: string, step: "replied" | "resolved") => void;
+    progress?: PrReviewThreadProgress;
+    onStep?: (threadId: string, step: "replied" | "resolved" | "refused") => Promise<void> | void;
   } = {},
 ): Promise<PrReviewThreadActionResult[]> {
   const results: PrReviewThreadActionResult[] = [];
@@ -191,8 +211,13 @@ export async function runThreadActions(
       results.push({ ...base, status: "skipped", error: "disabled" });
       continue;
     }
-    const needsReply = a.action !== "resolve" && !a.replied;
-    const needsResolve = a.action !== "reply" && !a.resolved;
+    const done = opts.progress?.[a.threadId] ?? {};
+    if (done.refused) {
+      results.push({ ...base, status: "failed", error: "Refused earlier: not retried" });
+      continue;
+    }
+    const needsReply = a.action !== "resolve" && !done.replied;
+    const needsResolve = a.action !== "reply" && !done.resolved;
     if (!needsReply && !needsResolve) {
       results.push({ ...base, status: "done" });
       continue;
@@ -225,16 +250,17 @@ export async function runThreadActions(
       lookup ??= list(ri, prNumber);
       const refusal = vetThread(await lookup, a);
       if (refusal) {
+        await opts.onStep?.(a.threadId, "refused");
         results.push({ ...base, status: "failed", error: refusal });
         continue;
       }
       if (needsReply && reply) {
         await reply(ri, prNumber, { threadId: a.threadId, commentId: a.commentId }, a.body ?? "");
-        opts.onStep?.(a.threadId, "replied");
+        await opts.onStep?.(a.threadId, "replied");
       }
       if (needsResolve && resolve) {
         await resolve(ri, prNumber, a.threadId);
-        opts.onStep?.(a.threadId, "resolved");
+        await opts.onStep?.(a.threadId, "resolved");
       }
       results.push({ ...base, status: "done" });
     } catch (err) {

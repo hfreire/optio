@@ -377,6 +377,26 @@ describe("appendChatReplyFromRun", () => {
     expect(row.threadActions).toEqual([{ ...resolveA, enabled: true }]);
   });
 
+  it("leaves the recorded progress alone", async () => {
+    const review = await insertReview({
+      state: "ready",
+      threadActions: [replyResolveB],
+      threadActionProgress: { B: { replied: true } },
+    });
+    const [run] = await db
+      .insert(prReviewRuns)
+      .values({ prReviewId: review.id, resultSummary: "ok" })
+      .returning();
+    await runLogService.insertLog(
+      { prReviewRunId: run.id },
+      { content: draft([{ ...replyResolveB, body: "Fixed differently" }]) },
+    );
+    await appendChatReplyFromRun(run.id);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(row.threadActions[0]).toMatchObject({ body: "Fixed differently" });
+    expect(row.threadActionProgress).toEqual({ B: { replied: true } });
+  });
+
   it("keeps the stored actions when nothing valid comes back", async () => {
     const row = await chat(draft([{ threadId: "", commentId: 1, action: "resolve" }]), [
       replyResolveB,
@@ -394,7 +414,8 @@ describe("retrying after a partial failure", () => {
     const review = await insertReview({ summary: "", threadActions: [replyResolveB] });
     await expect(submitReview(review.id)).rejects.toBeInstanceOf(ThreadActionsNotAppliedError);
     expect(calls).toEqual(["reply:B"]);
-    expect((await stored(review.id)).threadActions[0]).toMatchObject({ replied: true });
+    expect((await stored(review.id)).threadActionProgress).toEqual({ B: { replied: true } });
+    expect((await stored(review.id)).threadActions[0]).not.toHaveProperty("replied");
     calls.length = 0;
     await expect(submitReview(review.id)).resolves.toMatchObject({
       review: { state: "submitted" },
@@ -425,17 +446,166 @@ describe("retrying after a partial failure", () => {
     );
   });
 
-  it("keeps recorded progress when the person edits the draft", async () => {
+  it("an edit never touches progress, and a client cannot set it", async () => {
     const review = await insertReview({
-      threadActions: [{ ...replyResolveB, replied: true }],
+      threadActions: [replyResolveB],
+      threadActionProgress: { B: { replied: true } },
     });
     await updatePrReviewDraft(review.id, {
-      threadActions: [{ ...replyResolveB, body: "Fixed in abc" }],
+      threadActions: [{ ...replyResolveB, body: "Fixed in abc", resolved: true }],
     });
-    expect((await stored(review.id)).threadActions[0]).toMatchObject({
-      body: "Fixed in abc",
-      replied: true,
+    const row = await stored(review.id);
+    expect(row.threadActions[0]).toMatchObject({ body: "Fixed in abc" });
+    expect(row.threadActions[0]).not.toHaveProperty("resolved");
+    expect(row.threadActionProgress).toEqual({ B: { replied: true } });
+  });
+
+  it("shows the progress merged into each action", async () => {
+    const review = await insertReview({
+      threadActions: [replyResolveB],
+      threadActionProgress: { B: { replied: true } },
     });
+    const { getPrReview } = await import("./pr-review-service.js");
+    expect((await getPrReview(review.id))?.threadActions[0]).toMatchObject({ replied: true });
+    const edited = await updatePrReviewDraft(review.id, { summary: "x" });
+    expect(edited.threadActions[0]).toMatchObject({ replied: true });
+  });
+
+  it("only one of two overlapping finishes runs the pending steps", async () => {
+    const review = await insertReview({
+      state: "submitted",
+      summary: "s",
+      threadActions: [replyResolveB],
+      threadActionProgress: { B: { replied: true } },
+    });
+    const results = await Promise.allSettled([
+      submitReview(review.id, "u1"),
+      submitReview(review.id, "u2"),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(calls).toEqual(["resolve:B"]);
+  });
+
+  it("a refused reply is recorded once and never retried unattended", async () => {
+    const stranger: PrReviewThreadAction = {
+      threadId: "NOT_ON_PR",
+      commentId: 1,
+      action: "reply",
+      body: "x",
+    };
+    const review = await insertReview({ summary: "s", threadActions: [stranger] });
+    await submitReview(review.id, undefined, { unattended: true });
+    expect((await stored(review.id)).threadActionProgress).toEqual({
+      NOT_ON_PR: { refused: true },
+    });
+    vi.mocked(platform.listReviewThreads!).mockClear();
+    const again = await insertReview({
+      summary: "",
+      threadActions: [stranger],
+      threadActionProgress: { NOT_ON_PR: { refused: true } },
+    });
+    await expect(submitReview(again.id, undefined, { unattended: true })).rejects.toBeInstanceOf(
+      ThreadActionsNotAppliedError,
+    );
+    expect(platform.listReviewThreads).not.toHaveBeenCalled();
+  });
+});
+
+describe("auto-submit call sites", () => {
+  async function autoDraft(threadActions: unknown) {
+    const repoUrl = `https://github.com/o/auto-${++n}`;
+    const { insertRepo } = await import("../test-utils/integration/fixtures.js");
+    await insertRepo({ repoUrl, externalReviewMode: "on_pr_post" });
+    const review = await insertReview({ repoUrl, state: "reviewing", origin: "auto" });
+    const [run] = await db
+      .insert(prReviewRuns)
+      .values({ prReviewId: review.id, resultSummary: "Done." })
+      .returning();
+    await parseReviewOutput(
+      run.id,
+      JSON.stringify({ verdict: "comment", summary: "", fileComments: [], threadActions }),
+    );
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    return row;
+  }
+
+  it("leaves a resolve-only draft for a person", async () => {
+    const row = await autoDraft([{ threadId: "A", commentId: 1, action: "resolve" }]);
+    expect(row.state).toBe("ready");
+    expect(row.autoSubmitted).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("still auto-submits a draft with a reply, leaving resolves pending", async () => {
+    const row = await autoDraft([
+      { threadId: "A", commentId: 1, action: "resolve" },
+      { threadId: "B", commentId: 2, action: "reply", body: "Why?" },
+    ]);
+    expect(row.state).toBe("submitted");
+    expect(calls).toEqual(["reply:B"]);
+  });
+
+  it("tells the reconciler not to auto-submit a draft only a person can submit", async () => {
+    const { buildWorldSnapshot } = await import("./reconcile-snapshot.js");
+    const { insertRepo } = await import("../test-utils/integration/fixtures.js");
+    const repoUrl = `https://github.com/o/snap-${++n}`;
+    await insertRepo({ repoUrl, externalReviewMode: "on_pr_post" });
+    const resolveOnly = await insertReview({ repoUrl, origin: "auto", threadActions: [resolveA] });
+    const withSummary = await insertReview({
+      repoUrl,
+      origin: "auto",
+      summary: "s",
+      threadActions: [resolveA],
+    });
+    const spec = async (id: string) => {
+      const snap = await buildWorldSnapshot({ kind: "pr-review", id });
+      return snap?.run.kind === "pr-review" ? snap.run.spec.autoSubmitOnReady : undefined;
+    };
+    expect(await spec(resolveOnly.id)).toBe(false);
+    expect(await spec(withSummary.id)).toBe(true);
+  });
+});
+
+describe("a failing claim release", () => {
+  it("does not hide the original error", async () => {
+    vi.mocked(platform.submitReview).mockRejectedValueOnce(new Error("boom"));
+    const review = await insertReview({ summary: "s" });
+    const original = db.update.bind(db);
+    const spy = vi.spyOn(db, "update").mockImplementation(((table: never) => {
+      const builder = original(table);
+      return {
+        set: (v: Record<string, unknown>) =>
+          v.submitClaimedAt === null
+            ? { where: () => Promise.reject(new Error("db down")) }
+            : builder.set(v),
+      };
+    }) as never);
+    try {
+      await expect(submitReview(review.id)).rejects.toThrow("boom");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("does not fail a submit that went through", async () => {
+    const review = await insertReview({ summary: "s" });
+    const original = db.update.bind(db);
+    const spy = vi.spyOn(db, "update").mockImplementation(((table: never) => {
+      const builder = original(table);
+      return {
+        set: (v: Record<string, unknown>) =>
+          v.submitClaimedAt === null
+            ? { where: () => Promise.reject(new Error("db down")) }
+            : builder.set(v),
+      };
+    }) as never);
+    try {
+      await expect(submitReview(review.id)).resolves.toMatchObject({
+        review: { state: "submitted" },
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -53,11 +53,19 @@ export interface PrReviewThreadAction {
   body?: string;
   /** Off = skipped on submit. Absent means on. */
   enabled?: boolean;
-  /** Set once the reply landed, so a retry doesn't post it twice. */
+  /** Read-only progress merged in by the API: the reply landed. */
   replied?: boolean;
-  /** Set once the thread was resolved. */
+  /** Read-only: the thread was resolved. */
   resolved?: boolean;
+  /** Read-only: refused as not this account's thread on this PR; never retried. */
+  refused?: boolean;
 }
+
+/** Which steps of each action ran, keyed by threadId; kept apart from the editable list. */
+export type PrReviewThreadProgress = Record<
+  string,
+  { replied?: boolean; resolved?: boolean; refused?: boolean }
+>;
 
 export interface PrReviewThreadActionResult {
   threadId: string;

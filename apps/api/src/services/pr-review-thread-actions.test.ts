@@ -5,6 +5,7 @@ import {
   runThreadActions,
   hasEnabledThreadActions,
   hasPendingThreadActions,
+  withProgress,
   awaitsPerson,
   isThreadsOnly,
   threadActionSchema,
@@ -365,13 +366,17 @@ describe("runThreadActions", () => {
 describe("thread action progress", () => {
   const base = { threadId: "a", commentId: 1 } as const;
   const both: PrReviewThreadAction = { ...base, action: "reply_resolve", body: "Fixed" };
+  const row = (threadActions: PrReviewThreadAction[], threadActionProgress = {}) => ({
+    threadActions,
+    threadActionProgress,
+  });
 
-  function platform() {
+  function platform(author = "me") {
     const calls: string[] = [];
     const p = {
       listReviewThreads: async () => ({
         viewerLogin: "me",
-        threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: "me" }],
+        threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: author }],
       }),
       replyToReviewThread: async () => {
         calls.push("reply");
@@ -390,7 +395,9 @@ describe("thread action progress", () => {
     };
     const steps: string[] = [];
     const [r] = await runThreadActions(p, ri, 5, [both], {
-      onStep: (id, step) => steps.push(`${id}:${step}`),
+      onStep: (id, step) => {
+        steps.push(`${id}:${step}`);
+      },
     });
     expect(steps).toEqual(["a:replied"]);
     expect(r.status).toBe("failed");
@@ -398,7 +405,7 @@ describe("thread action progress", () => {
 
   it("skips a reply that already landed and only resolves", async () => {
     const { p, calls } = platform();
-    const [r] = await runThreadActions(p, ri, 5, [{ ...both, replied: true }]);
+    const [r] = await runThreadActions(p, ri, 5, [both], { progress: { a: { replied: true } } });
     expect(calls).toEqual(["resolve"]);
     expect(r.status).toBe("done");
   });
@@ -407,26 +414,56 @@ describe("thread action progress", () => {
     const { p, calls } = platform();
     const listSpy = vi.fn(p.listReviewThreads);
     p.listReviewThreads = listSpy;
-    const [r] = await runThreadActions(p, ri, 5, [{ ...both, replied: true, resolved: true }]);
+    const [r] = await runThreadActions(p, ri, 5, [both], {
+      progress: { a: { replied: true, resolved: true } },
+    });
     expect(r.status).toBe("done");
     expect(calls).toEqual([]);
     expect(listSpy).not.toHaveBeenCalled();
   });
 
+  it("records a refusal as terminal and never looks again", async () => {
+    const { p, calls } = platform("someone-else");
+    const steps: string[] = [];
+    const first = await runThreadActions(p, ri, 5, [both], {
+      onStep: (id, step) => {
+        steps.push(step);
+      },
+    });
+    expect(steps).toEqual(["refused"]);
+    expect(first[0]).toMatchObject({ status: "failed", error: expect.stringContaining("Refused") });
+    const listSpy = vi.fn(p.listReviewThreads);
+    p.listReviewThreads = listSpy;
+    const again = await runThreadActions(p, ri, 5, [both], { progress: { a: { refused: true } } });
+    expect(again[0].status).toBe("failed");
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  it("merges progress into the actions for display", () => {
+    const merged = withProgress(row([both], { a: { replied: true } }));
+    expect(merged.threadActions[0]).toMatchObject({ replied: true });
+    expect(both).not.toHaveProperty("replied");
+  });
+
   it("knows which drafts still have work", () => {
-    expect(hasPendingThreadActions([both])).toBe(true);
-    expect(hasPendingThreadActions([{ ...both, replied: true }])).toBe(true);
-    expect(hasPendingThreadActions([{ ...both, replied: true, resolved: true }])).toBe(false);
-    expect(hasPendingThreadActions([{ ...both, enabled: false }])).toBe(false);
+    expect(hasPendingThreadActions(row([both]))).toBe(true);
+    expect(hasPendingThreadActions(row([both], { a: { replied: true } }))).toBe(true);
+    expect(hasPendingThreadActions(row([both], { a: { replied: true, resolved: true } }))).toBe(
+      false,
+    );
+    expect(hasPendingThreadActions(row([{ ...both, enabled: false }]))).toBe(false);
+    expect(hasPendingThreadActions(row([both], { a: { refused: true } }))).toBe(false);
   });
 });
 
 describe("awaitsPerson", () => {
-  const draft = (threadActions: PrReviewThreadAction[], over = {}) => ({
+  const draft = (threadActions: PrReviewThreadAction[], threadActionProgress = {}, over = {}) => ({
     verdict: "comment",
     summary: "",
     fileComments: [],
     threadActions,
+    threadActionProgress,
     ...over,
   });
   const resolve: PrReviewThreadAction = { threadId: "a", commentId: 1, action: "resolve" };
@@ -440,11 +477,12 @@ describe("awaitsPerson", () => {
 
   it("is false when an unattended reply or a review post can still happen", () => {
     expect(awaitsPerson(draft([resolve, reply]))).toBe(false);
-    expect(awaitsPerson(draft([resolve], { summary: "LGTM" }))).toBe(false);
-    expect(awaitsPerson(draft([resolve], { verdict: "approve" }))).toBe(false);
+    expect(awaitsPerson(draft([resolve], {}, { summary: "LGTM" }))).toBe(false);
+    expect(awaitsPerson(draft([resolve], {}, { verdict: "approve" }))).toBe(false);
   });
 
-  it("is true again once the only unattended reply has landed", () => {
-    expect(awaitsPerson(draft([resolve, { ...reply, replied: true }]))).toBe(true);
+  it("is true again once the only unattended reply landed or was refused", () => {
+    expect(awaitsPerson(draft([resolve, reply], { b: { replied: true } }))).toBe(true);
+    expect(awaitsPerson(draft([reply], { b: { refused: true } }))).toBe(true);
   });
 });

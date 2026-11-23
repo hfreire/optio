@@ -38,6 +38,12 @@ const createReviewSchema = z
 
 const ThreadActionSchema = threadActionShape.describe("An action on an existing review thread");
 
+const ThreadActionResponseSchema = threadActionShape.extend({
+  replied: z.boolean().optional().describe("The reply was posted"),
+  resolved: z.boolean().optional().describe("The thread was resolved"),
+  refused: z.boolean().optional().describe("Refused on submit and never retried"),
+});
+
 const SubmitErrorSchema = ErrorResponseSchema.extend({
   threadActionResults: z
     .array(
@@ -112,7 +118,7 @@ const PrReviewSchema = z
     verdict: z.string().nullable(),
     summary: z.string().nullable(),
     fileComments: z.array(z.record(z.unknown())).nullable(),
-    threadActions: z.array(ThreadActionSchema).optional(),
+    threadActions: z.array(ThreadActionResponseSchema).optional(),
     origin: z.string(),
     userEngaged: z.boolean(),
     autoSubmitted: z.boolean(),

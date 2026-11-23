@@ -92,6 +92,7 @@ export function hasPendingThreadActions(actions: PrReviewThreadAction[]): boolea
   return actions.some(
     (a) =>
       a.enabled !== false &&
+      !a.refused &&
       ((a.action !== "resolve" && !a.replied) || (a.action !== "reply" && !a.resolved)),
   );
 }
