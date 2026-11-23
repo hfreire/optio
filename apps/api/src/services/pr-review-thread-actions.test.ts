@@ -137,7 +137,7 @@ describe("runThreadActions", () => {
         if (t.threadId === "b") throw new Error("403 forbidden");
         calls.push(`reply:${t.threadId}`);
       }),
-    } as Partial<GitPlatform>);
+    });
     const results = await runThreadActions(p, ri, 5, [
       { threadId: "b", commentId: 2, action: "reply_resolve", body: "x" },
       { threadId: "c", commentId: 3, action: "resolve" },
@@ -152,7 +152,7 @@ describe("runThreadActions", () => {
       resolveReviewThread: vi.fn(async () => {
         throw new Error("boom");
       }),
-    } as Partial<GitPlatform>);
+    });
     const [r] = await runThreadActions(p, ri, 5, [
       { threadId: "b", commentId: 2, action: "reply_resolve", body: "x" },
     ]);
