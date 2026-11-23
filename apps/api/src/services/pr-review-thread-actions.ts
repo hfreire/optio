@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import { hasPendingThreadActions as sharedHasPending, pendingThreadSteps } from "@optio/shared";
 import type {
   GitPlatform,
   PrReviewThreadAction,
@@ -119,25 +121,37 @@ type ProgressRow = {
   threadActionProgress: PrReviewThreadProgress | null;
 };
 
+/** Identity of an action: progress recorded for another one (an edit) does not count. */
+export function threadActionFingerprint(a: PrReviewThreadAction): string {
+  return createHash("sha256")
+    .update(JSON.stringify([a.threadId, a.action, a.commentId, a.body ?? ""]))
+    .digest("hex");
+}
+
+function progressOf(
+  progress: PrReviewThreadProgress | null | undefined,
+  a: PrReviewThreadAction,
+): Omit<PrReviewThreadProgress[string], "fp"> {
+  const { fp, ...steps } = progress?.[a.threadId] ?? {};
+  return fp === threadActionFingerprint(a) ? steps : {};
+}
+
 /** The editable list with each action's recorded progress merged in. */
 export function withProgress<T extends ProgressRow>(
   row: T,
 ): T & { threadActions: PrReviewThreadAction[] } {
-  const progress = row.threadActionProgress ?? {};
   return {
     ...row,
-    threadActions: (row.threadActions ?? []).map((a) => ({ ...a, ...progress[a.threadId] })),
+    threadActions: (row.threadActions ?? []).map((a) => ({
+      ...a,
+      ...progressOf(row.threadActionProgress, a),
+    })),
   };
 }
 
 /** An enabled action with a reply or resolve step still to do. */
 export function hasPendingThreadActions(row: ProgressRow): boolean {
-  return withProgress(row).threadActions.some(
-    (a) =>
-      a.enabled !== false &&
-      !a.refused &&
-      ((a.action !== "resolve" && !a.replied) || (a.action !== "reply" && !a.resolved)),
-  );
+  return sharedHasPending(withProgress(row).threadActions);
 }
 
 type DraftContent = ProgressRow & {
@@ -161,7 +175,7 @@ export function awaitsPerson(d: DraftContent): boolean {
   return (
     isThreadsOnly(d) &&
     !withProgress(d).threadActions.some(
-      (a) => a.enabled !== false && a.action === "reply" && !a.replied && !a.refused,
+      (a) => a.action === "reply" && !a.authorMismatch && pendingThreadSteps(a).reply,
     )
   );
 }
@@ -170,23 +184,43 @@ const normalizeLogin = (login: string): string => login.replace(/\[bot\]$/i, "")
 
 type ThreadLookup = { viewerLogin: string; threads: ReviewThreadInfo[] };
 
-/** Agent-drafted ids are untrusted: only act on this PR's threads that this account started. */
-function vetThread(lookup: ThreadLookup, a: PrReviewThreadAction): string | null {
+type Vetting = { kind: "refused" | "author"; message: string };
+
+/**
+ * Agent-drafted ids are untrusted: only act on this PR's threads that an
+ * account Optio posts as started. A wrong thread is final; a wrong author
+ * can be fixed by configuration, so a person may retry.
+ */
+function vetThread(
+  lookup: ThreadLookup,
+  a: PrReviewThreadAction,
+  identities: { logins: string[]; reviewIds: number[] },
+): Vetting | null {
   const thread = lookup.threads.find((t) => t.threadId === a.threadId);
-  if (!thread) return "Refused: thread is not on this PR";
+  if (!thread) return { kind: "refused", message: "Refused: thread is not on this PR" };
   if (thread.firstCommentId !== a.commentId) {
-    return "Refused: commentId is not the first comment of the thread";
+    return {
+      kind: "refused",
+      message: "Refused: commentId is not the first comment of the thread",
+    };
   }
+  const own = new Set([lookup.viewerLogin, ...identities.logins].map(normalizeLogin));
   if (
-    thread.firstCommentAuthor === null ||
-    normalizeLogin(thread.firstCommentAuthor) !== normalizeLogin(lookup.viewerLogin)
+    (thread.firstCommentAuthor !== null && own.has(normalizeLogin(thread.firstCommentAuthor))) ||
+    (thread.firstCommentReviewId != null &&
+      identities.reviewIds.includes(thread.firstCommentReviewId))
   ) {
-    return "Refused: thread was not written by the authenticated account";
+    return null;
   }
-  return null;
+  return {
+    kind: "author",
+    message: "Refused: thread was not started by an account Optio posts as",
+  };
 }
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+export type ThreadStep = "replied" | "resolved" | "refused" | "authorMismatch";
 
 /** Run each enabled action in order; one failing never stops or undoes the others. */
 export async function runThreadActions(
@@ -197,7 +231,11 @@ export async function runThreadActions(
   opts: {
     unattended?: boolean;
     progress?: PrReviewThreadProgress;
-    onStep?: (threadId: string, step: "replied" | "resolved" | "refused") => Promise<void> | void;
+    /** Other accounts Optio posts as, e.g. the server token when a person submits. */
+    otherLogins?: () => Promise<string[]>;
+    /** GitHub reviews Optio posted, whose inline comments start Optio's own threads. */
+    postedReviewIds?: number[];
+    onStep?: (threadId: string, step: ThreadStep, fingerprint: string) => Promise<void> | void;
   } = {},
 ): Promise<PrReviewThreadActionResult[]> {
   const results: PrReviewThreadActionResult[] = [];
@@ -205,19 +243,28 @@ export async function runThreadActions(
   const resolve = platform.resolveReviewThread?.bind(platform);
   const list = platform.listReviewThreads?.bind(platform);
   let lookup: Promise<ThreadLookup> | null = null;
+  let identities: { logins: string[]; reviewIds: number[] } | null = null;
   for (const a of actions) {
     const base = { threadId: a.threadId, action: a.action };
     if (a.enabled === false) {
       results.push({ ...base, status: "skipped", error: "disabled" });
       continue;
     }
-    const done = opts.progress?.[a.threadId] ?? {};
+    const done = progressOf(opts.progress, a);
     if (done.refused) {
       results.push({ ...base, status: "failed", error: "Refused earlier: not retried" });
       continue;
     }
-    const needsReply = a.action !== "resolve" && !done.replied;
-    const needsResolve = a.action !== "reply" && !done.resolved;
+    if (done.authorMismatch && opts.unattended) {
+      results.push({
+        ...base,
+        status: "failed",
+        error: "Left pending: thread author did not match; a person can retry",
+      });
+      continue;
+    }
+    const fp = threadActionFingerprint(a);
+    const { reply: needsReply, resolve: needsResolve } = pendingThreadSteps({ ...a, ...done });
     if (!needsReply && !needsResolve) {
       results.push({ ...base, status: "done" });
       continue;
@@ -248,19 +295,31 @@ export async function runThreadActions(
     }
     try {
       lookup ??= list(ri, prNumber);
-      const refusal = vetThread(await lookup, a);
+      const known = await lookup;
+      identities ??= {
+        logins: await (opts.otherLogins?.() ?? Promise.resolve([])).catch((err: unknown) => {
+          rootLogger.warn({ err }, "Could not look up the server account for thread actions");
+          return [];
+        }),
+        reviewIds: opts.postedReviewIds ?? [],
+      };
+      const refusal = vetThread(known, a, identities);
       if (refusal) {
-        await opts.onStep?.(a.threadId, "refused");
-        results.push({ ...base, status: "failed", error: refusal });
+        await opts.onStep?.(
+          a.threadId,
+          refusal.kind === "refused" ? "refused" : "authorMismatch",
+          fp,
+        );
+        results.push({ ...base, status: "failed", error: refusal.message });
         continue;
       }
       if (needsReply && reply) {
         await reply(ri, prNumber, { threadId: a.threadId, commentId: a.commentId }, a.body ?? "");
-        await opts.onStep?.(a.threadId, "replied");
+        await opts.onStep?.(a.threadId, "replied", fp);
       }
       if (needsResolve && resolve) {
         await resolve(ri, prNumber, a.threadId);
-        await opts.onStep?.(a.threadId, "resolved");
+        await opts.onStep?.(a.threadId, "resolved", fp);
       }
       results.push({ ...base, status: "done" });
     } catch (err) {

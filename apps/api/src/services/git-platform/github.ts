@@ -340,7 +340,7 @@ export class GitHubPlatform implements GitPlatform {
       body: string;
       comments?: { path: string; line?: number; side?: string; body: string }[];
     },
-  ): Promise<{ url: string }> {
+  ): Promise<{ url: string; reviewId?: number }> {
     const payload: any = { event: review.event, body: review.body };
     if (review.comments?.length) {
       payload.comments = review.comments.map((c) => ({
@@ -355,7 +355,23 @@ export class GitHubPlatform implements GitPlatform {
       headers: this.headers(true),
       body: JSON.stringify(payload),
     });
-    return { url: data.html_url ?? "" };
+    return {
+      url: data.html_url ?? "",
+      ...(Number.isSafeInteger(data.id) ? { reviewId: data.id as number } : {}),
+    };
+  }
+
+  async getViewerLogin(ri: RepoIdentifier): Promise<string> {
+    const res = await this.fetchJson<{ data?: { viewer: { login: string } } }>(
+      githubGraphqlUrl(ri.apiBaseUrl),
+      {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({ query: "query { viewer { login } }" }),
+      },
+    );
+    if (!res.data) throw new GitHubApiError(422, JSON.stringify({ message: "no viewer" }));
+    return res.data.viewer.login;
   }
 
   async replyToReviewThread(
@@ -381,7 +397,7 @@ export class GitHubPlatform implements GitPlatform {
         pullRequest(number: $number) {
           reviewThreads(first: 100, after: $after) {
             pageInfo { hasNextPage endCursor }
-            nodes { id comments(first: 1) { nodes { databaseId author { login } } } }
+            nodes { id comments(first: 1) { nodes { databaseId author { login } pullRequestReview { databaseId } } } }
           }
         }
       }
@@ -397,7 +413,11 @@ export class GitHubPlatform implements GitPlatform {
               nodes: Array<{
                 id: string;
                 comments: {
-                  nodes: Array<{ databaseId: number; author: { login: string } | null }>;
+                  nodes: Array<{
+                    databaseId: number;
+                    author: { login: string } | null;
+                    pullRequestReview: { databaseId: number } | null;
+                  }>;
                 };
               }>;
             };
@@ -430,6 +450,7 @@ export class GitHubPlatform implements GitPlatform {
           threadId: node.id,
           firstCommentId: first.databaseId,
           firstCommentAuthor: first.author?.login ?? null,
+          firstCommentReviewId: first.pullRequestReview?.databaseId ?? null,
         });
       }
       if (!connection.pageInfo.hasNextPage) return { viewerLogin, threads };

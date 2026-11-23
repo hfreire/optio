@@ -55,6 +55,7 @@ import {
   isThreadsOnly,
   withProgress,
   ThreadActionsNotAppliedError,
+  type ThreadStep,
 } from "./pr-review-thread-actions.js";
 
 export type PrReview = typeof prReviews.$inferSelect;
@@ -837,17 +838,22 @@ function extractVerdictJson(
 
 // ── Submit review ──────────────────────────────────────────────────────────
 
-/** One atomic UPDATE per step, so concurrent edits and other steps never overwrite it. */
+/**
+ * One atomic UPDATE per step, so concurrent edits and other steps never
+ * overwrite it. Steps recorded for another version of the action are dropped.
+ */
 async function recordProgress(
   id: string,
   threadId: string,
-  step: "replied" | "resolved" | "refused",
+  step: ThreadStep,
+  fingerprint: string,
 ): Promise<void> {
-  const patch = JSON.stringify({ [step]: true });
+  const patch = JSON.stringify({ fp: fingerprint, [step]: true });
+  const entry = sql`(${prReviews.threadActionProgress} -> ${threadId}::text)`;
   await db
     .update(prReviews)
     .set({
-      threadActionProgress: sql`${prReviews.threadActionProgress} || jsonb_build_object(${threadId}::text, COALESCE(${prReviews.threadActionProgress} -> ${threadId}::text, '{}'::jsonb) || ${patch}::jsonb)`,
+      threadActionProgress: sql`${prReviews.threadActionProgress} || jsonb_build_object(${threadId}::text, CASE WHEN ${entry} ->> 'fp' = ${fingerprint}::text THEN (${entry} - 'authorMismatch') || ${patch}::jsonb ELSE ${patch}::jsonb END)`,
     })
     .where(eq(prReviews.id, id));
 }
@@ -951,6 +957,7 @@ async function postReview(
   const threadsOnly = alreadySubmitted || isThreadsOnly(review);
 
   let reviewUrl: string | undefined;
+  let postedReviewIds = review.postedReviewIds ?? [];
   if (!threadsOnly) {
     const result = await platform.submitReview(ri, review.prNumber, {
       event,
@@ -959,19 +966,33 @@ async function postReview(
       comments: comments.length > 0 ? comments : undefined,
     });
     reviewUrl = result.url;
+    if (result.reviewId !== undefined) {
+      postedReviewIds = [...postedReviewIds, result.reviewId];
+      await db.update(prReviews).set({ postedReviewIds }).where(eq(prReviews.id, id));
+    }
   }
 
+  let applied = 0;
   const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
     unattended: opts.unattended,
     progress: review.threadActionProgress,
-    onStep: (threadId, step) => recordProgress(id, threadId, step),
+    postedReviewIds,
+    otherLogins: async () => {
+      if (!userId || !platform.getViewerLogin) return [];
+      const server = await getGitPlatformForRepo(review.repoUrl, { server: true });
+      return [await server.platform.getViewerLogin!(server.ri)];
+    },
+    onStep: async (threadId, step, fingerprint) => {
+      await recordProgress(id, threadId, step, fingerprint);
+      if (step === "replied" || step === "resolved") applied++;
+    },
   });
   const failed = threadActionResults.filter((r) => r.status === "failed");
   if (failed.length > 0) {
     logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
   }
 
-  if (threadsOnly && !threadActionResults.some((r) => r.status === "done")) {
+  if (threadsOnly && applied === 0 && !threadActionResults.some((r) => r.status === "done")) {
     throw new ThreadActionsNotAppliedError(threadActionResults);
   }
   if (alreadySubmitted) {

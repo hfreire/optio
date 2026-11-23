@@ -4,11 +4,11 @@
  * submit posts the review (or skips it when only threads are acted on) before
  * running each enabled action, reporting every result.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import type { GitPlatform, PrReviewThreadAction } from "@optio/shared";
 import { db } from "../db/client.js";
-import { prReviewRuns, prReviews } from "../db/schema.js";
+import { prReviewRuns, prReviews, users } from "../db/schema.js";
 
 const calls: string[] = [];
 const platform = {
@@ -17,6 +17,7 @@ const platform = {
     calls.push("review");
     return { url: "https://github.com/o/r/pull/1#review" };
   }),
+  getViewerLogin: vi.fn(async () => "optio-bot"),
   listReviewThreads: vi.fn(async () => ({
     viewerLogin: "optio-bot",
     threads: [
@@ -43,7 +44,9 @@ vi.mock("./git-token-service.js", async (importOriginal) => ({
 
 const { parseReviewOutput, submitReview, updatePrReviewDraft, appendChatReplyFromRun } =
   await import("./pr-review-service.js");
-const { ThreadActionsNotAppliedError } = await import("./pr-review-thread-actions.js");
+const { ThreadActionsNotAppliedError, threadActionFingerprint, withProgress } =
+  await import("./pr-review-thread-actions.js");
+const { hasPendingThreadActions: hasPending } = await import("./pr-review-thread-actions.js");
 const runLogService = await import("./run-log-service.js");
 
 let n = 100;
@@ -73,6 +76,8 @@ const replyResolveB: PrReviewThreadAction = {
   action: "reply_resolve",
   body: "Fixed",
 };
+
+const fpB = threadActionFingerprint(replyResolveB);
 
 beforeEach(() => {
   calls.length = 0;
@@ -299,6 +304,69 @@ describe("submitReview when nothing is posted", () => {
   });
 });
 
+describe("submitReview author identities", () => {
+  const botThread = { threadId: "BOT", firstCommentId: 7, firstCommentAuthor: "optio-app[bot]" };
+  const onBot: PrReviewThreadAction = { threadId: "BOT", commentId: 7, action: "resolve" };
+  let person = "";
+  beforeAll(async () => {
+    const [u] = await db
+      .insert(users)
+      .values({ provider: "github", externalId: "ident-1", email: "a@b.c", displayName: "A" })
+      .returning();
+    person = u.id;
+  });
+  const stored = async (id: string) =>
+    (await db.select().from(prReviews).where(eq(prReviews.id, id)))[0];
+
+  it("lets a person resolve a thread the server bot started", async () => {
+    vi.mocked(platform.listReviewThreads!).mockResolvedValueOnce({
+      viewerLogin: "alice",
+      threads: [botThread],
+    });
+    vi.mocked(platform.getViewerLogin!).mockResolvedValueOnce("Optio-App");
+    const review = await insertReview({ summary: "s", threadActions: [onBot] });
+    const result = await submitReview(review.id, person);
+    expect(result.threadActionResults).toMatchObject([{ threadId: "BOT", status: "done" }]);
+  });
+
+  it("lets the server bot resolve a thread a person started", async () => {
+    vi.mocked(platform.listReviewThreads!).mockResolvedValueOnce({
+      viewerLogin: "optio-app[bot]",
+      threads: [{ ...botThread, firstCommentAuthor: "alice" }],
+    });
+    vi.mocked(platform.getViewerLogin!).mockResolvedValueOnce("alice");
+    const review = await insertReview({ summary: "s", threadActions: [onBot] });
+    const result = await submitReview(review.id, person);
+    expect(result.threadActionResults).toMatchObject([{ status: "done" }]);
+  });
+
+  it("accepts an inline comment of a review Optio posted", async () => {
+    vi.mocked(platform.listReviewThreads!).mockResolvedValueOnce({
+      viewerLogin: "alice",
+      threads: [{ ...botThread, firstCommentAuthor: "someone", firstCommentReviewId: 555 }],
+    });
+    vi.mocked(platform.submitReview).mockResolvedValueOnce({ url: "u", reviewId: 555 });
+    const review = await insertReview({ summary: "s", threadActions: [onBot] });
+    const result = await submitReview(review.id, person);
+    expect(result.threadActionResults).toMatchObject([{ status: "done" }]);
+    expect((await stored(review.id)).postedReviewIds).toEqual([555]);
+  });
+
+  it("keeps an unknown author pending so a person can retry", async () => {
+    vi.mocked(platform.listReviewThreads!).mockResolvedValueOnce({
+      viewerLogin: "alice",
+      threads: [{ ...botThread, firstCommentAuthor: "mallory" }],
+    });
+    const review = await insertReview({ summary: "s", threadActions: [onBot] });
+    const result = await submitReview(review.id, person);
+    expect(result.threadActionResults[0]).toMatchObject({ status: "failed" });
+    const row = await stored(review.id);
+    expect(row.threadActionProgress.BOT).toMatchObject({ authorMismatch: true });
+    expect(hasPending(row)).toBe(true);
+    expect(calls).toEqual(["review"]);
+  });
+});
+
 describe("submitReview unattended", () => {
   it("replies but leaves resolves pending and says so", async () => {
     const replyOnly: PrReviewThreadAction = {
@@ -381,7 +449,7 @@ describe("appendChatReplyFromRun", () => {
     const review = await insertReview({
       state: "ready",
       threadActions: [replyResolveB],
-      threadActionProgress: { B: { replied: true } },
+      threadActionProgress: { B: { fp: fpB, replied: true } },
     });
     const [run] = await db
       .insert(prReviewRuns)
@@ -394,7 +462,8 @@ describe("appendChatReplyFromRun", () => {
     await appendChatReplyFromRun(run.id);
     const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
     expect(row.threadActions[0]).toMatchObject({ body: "Fixed differently" });
-    expect(row.threadActionProgress).toEqual({ B: { replied: true } });
+    expect(row.threadActionProgress).toEqual({ B: { fp: fpB, replied: true } });
+    expect(withProgress(row).threadActions[0]).not.toHaveProperty("replied");
   });
 
   it("keeps the stored actions when nothing valid comes back", async () => {
@@ -409,17 +478,18 @@ describe("retrying after a partial failure", () => {
   const stored = async (id: string) =>
     (await db.select().from(prReviews).where(eq(prReviews.id, id)))[0];
 
-  it("a threads-only retry resolves without replying twice", async () => {
+  it("a reply that landed is not reported as nothing submitted when the resolve fails", async () => {
     vi.mocked(platform.resolveReviewThread!).mockRejectedValueOnce(new Error("blip"));
     const review = await insertReview({ summary: "", threadActions: [replyResolveB] });
-    await expect(submitReview(review.id)).rejects.toBeInstanceOf(ThreadActionsNotAppliedError);
+    const result = await submitReview(review.id);
+    expect(result.review.state).toBe("submitted");
+    expect(result.threadActionResults).toMatchObject([{ threadId: "B", status: "failed" }]);
     expect(calls).toEqual(["reply:B"]);
-    expect((await stored(review.id)).threadActionProgress).toEqual({ B: { replied: true } });
-    expect((await stored(review.id)).threadActions[0]).not.toHaveProperty("replied");
-    calls.length = 0;
-    await expect(submitReview(review.id)).resolves.toMatchObject({
-      review: { state: "submitted" },
+    expect((await stored(review.id)).threadActionProgress).toEqual({
+      B: { fp: fpB, replied: true },
     });
+    calls.length = 0;
+    await submitReview(review.id, "u1");
     expect(calls).toEqual(["resolve:B"]);
   });
 
@@ -446,24 +516,39 @@ describe("retrying after a partial failure", () => {
     );
   });
 
-  it("an edit never touches progress, and a client cannot set it", async () => {
+  it("a client cannot set progress, and an edited action starts over", async () => {
     const review = await insertReview({
       threadActions: [replyResolveB],
-      threadActionProgress: { B: { replied: true } },
+      threadActionProgress: { B: { fp: fpB, replied: true } },
     });
-    await updatePrReviewDraft(review.id, {
-      threadActions: [{ ...replyResolveB, body: "Fixed in abc", resolved: true }],
+    const edited = await updatePrReviewDraft(review.id, {
+      threadActions: [{ ...replyResolveB, enabled: false, resolved: true }],
     });
-    const row = await stored(review.id);
-    expect(row.threadActions[0]).toMatchObject({ body: "Fixed in abc" });
-    expect(row.threadActions[0]).not.toHaveProperty("resolved");
-    expect(row.threadActionProgress).toEqual({ B: { replied: true } });
+    expect(edited.threadActions[0]).toMatchObject({ replied: true });
+    expect(edited.threadActions[0]).not.toHaveProperty("resolved");
+
+    const reworded = await updatePrReviewDraft(review.id, {
+      threadActions: [{ ...replyResolveB, body: "Fixed in abc" }],
+    });
+    expect(reworded.threadActions[0]).toMatchObject({ body: "Fixed in abc" });
+    expect(reworded.threadActions[0]).not.toHaveProperty("replied");
+  });
+
+  it("a corrected commentId clears a stale refusal and the new reply is posted", async () => {
+    const wrong = { ...replyResolveB, commentId: 99 };
+    const review = await insertReview({ summary: "", threadActions: [wrong] });
+    await expect(submitReview(review.id)).rejects.toBeInstanceOf(ThreadActionsNotAppliedError);
+    expect((await stored(review.id)).threadActionProgress.B).toMatchObject({ refused: true });
+    await updatePrReviewDraft(review.id, { threadActions: [replyResolveB] });
+    calls.length = 0;
+    await submitReview(review.id);
+    expect(calls).toEqual(["reply:B", "resolve:B"]);
   });
 
   it("shows the progress merged into each action", async () => {
     const review = await insertReview({
       threadActions: [replyResolveB],
-      threadActionProgress: { B: { replied: true } },
+      threadActionProgress: { B: { fp: fpB, replied: true } },
     });
     const { getPrReview } = await import("./pr-review-service.js");
     expect((await getPrReview(review.id))?.threadActions[0]).toMatchObject({ replied: true });
@@ -476,7 +561,7 @@ describe("retrying after a partial failure", () => {
       state: "submitted",
       summary: "s",
       threadActions: [replyResolveB],
-      threadActionProgress: { B: { replied: true } },
+      threadActionProgress: { B: { fp: fpB, replied: true } },
     });
     const results = await Promise.allSettled([
       submitReview(review.id, "u1"),
@@ -496,13 +581,13 @@ describe("retrying after a partial failure", () => {
     const review = await insertReview({ summary: "s", threadActions: [stranger] });
     await submitReview(review.id, undefined, { unattended: true });
     expect((await stored(review.id)).threadActionProgress).toEqual({
-      NOT_ON_PR: { refused: true },
+      NOT_ON_PR: { fp: threadActionFingerprint(stranger), refused: true },
     });
     vi.mocked(platform.listReviewThreads!).mockClear();
     const again = await insertReview({
       summary: "",
       threadActions: [stranger],
-      threadActionProgress: { NOT_ON_PR: { refused: true } },
+      threadActionProgress: { NOT_ON_PR: { fp: threadActionFingerprint(stranger), refused: true } },
     });
     await expect(submitReview(again.id, undefined, { unattended: true })).rejects.toBeInstanceOf(
       ThreadActionsNotAppliedError,

@@ -1586,6 +1586,8 @@ data class ReviewThreadInfo(
     val threadId: String,
     val firstCommentId: Double,
     val firstCommentAuthor: String? = null,
+    /** GitHub review the first comment belongs to, to recognise Optio's own inline comments. */
+    val firstCommentReviewId: Double? = null,
 )
 
 // endregion
@@ -3671,15 +3673,20 @@ data class PrReviewThreadAction(
     val replied: Boolean? = null,
     /** Read-only: the thread was resolved. */
     val resolved: Boolean? = null,
-    /** Read-only: refused as not this account's thread on this PR; never retried. */
+    /** Read-only: refused as not a thread on this PR with that first comment; never retried. */
     val refused: Boolean? = null,
+    /** Read-only: the thread was started by an account Optio does not post as; retried by a person. */
+    val authorMismatch: Boolean? = null,
 )
 
 @Serializable
 data class PrReviewThreadProgressItem(
+    /** Identity of the action the steps belong to; a mismatch means the action was edited. */
+    val fp: String? = null,
     val replied: Boolean? = null,
     val resolved: Boolean? = null,
     val refused: Boolean? = null,
+    val authorMismatch: Boolean? = null,
 )
 
 /** Which steps of each action ran, keyed by threadId; kept apart from the editable list. */

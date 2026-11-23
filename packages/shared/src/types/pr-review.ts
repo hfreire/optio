@@ -57,14 +57,40 @@ export interface PrReviewThreadAction {
   replied?: boolean;
   /** Read-only: the thread was resolved. */
   resolved?: boolean;
-  /** Read-only: refused as not this account's thread on this PR; never retried. */
+  /** Read-only: refused as not a thread on this PR with that first comment; never retried. */
   refused?: boolean;
+  /** Read-only: the thread was started by an account Optio does not post as; retried by a person. */
+  authorMismatch?: boolean;
+}
+
+/** Steps of an action that still have to happen; none for disabled or refused actions. */
+export function pendingThreadSteps(a: PrReviewThreadAction): { reply: boolean; resolve: boolean } {
+  if (a.enabled === false || a.refused) return { reply: false, resolve: false };
+  return {
+    reply: a.action !== "resolve" && !a.replied,
+    resolve: a.action !== "reply" && !a.resolved,
+  };
+}
+
+/** An enabled action with a reply or resolve step still to do. */
+export function hasPendingThreadActions(actions: PrReviewThreadAction[]): boolean {
+  return actions.some((a) => {
+    const s = pendingThreadSteps(a);
+    return s.reply || s.resolve;
+  });
 }
 
 /** Which steps of each action ran, keyed by threadId; kept apart from the editable list. */
 export type PrReviewThreadProgress = Record<
   string,
-  { replied?: boolean; resolved?: boolean; refused?: boolean }
+  {
+    /** Identity of the action the steps belong to; a mismatch means the action was edited. */
+    fp?: string;
+    replied?: boolean;
+    resolved?: boolean;
+    refused?: boolean;
+    authorMismatch?: boolean;
+  }
 >;
 
 export interface PrReviewThreadActionResult {

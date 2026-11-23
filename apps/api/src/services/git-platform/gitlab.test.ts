@@ -661,6 +661,11 @@ describe("GitLabPlatform", () => {
       );
     });
 
+    it("reads the account the token acts as", async () => {
+      mockJsonResponse({ username: "optio-bot" });
+      await expect(platform.getViewerLogin(ri)).resolves.toBe("optio-bot");
+    });
+
     it("follows pagination until a short page", async () => {
       const full = Array.from({ length: 100 }, (_, i) => ({
         id: `d${i}`,

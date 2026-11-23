@@ -42,6 +42,7 @@ const ThreadActionResponseSchema = threadActionShape.extend({
   replied: z.boolean().optional().describe("The reply was posted"),
   resolved: z.boolean().optional().describe("The thread was resolved"),
   refused: z.boolean().optional().describe("Refused on submit and never retried"),
+  authorMismatch: z.boolean().optional().describe("Thread author is not an account Optio posts as"),
 });
 
 const SubmitErrorSchema = ErrorResponseSchema.extend({

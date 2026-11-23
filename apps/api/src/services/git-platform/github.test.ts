@@ -220,6 +220,17 @@ describe("GitHubPlatform", () => {
   });
 
   describe("review thread actions", () => {
+    it("returns the id of the review it posted", async () => {
+      mockJsonResponse({ id: 555, html_url: "u" });
+      const result = await platform.submitReview(ri, 42, { event: "COMMENT", body: "x" });
+      expect(result).toEqual({ url: "u", reviewId: 555 });
+    });
+
+    it("reads the account the token acts as", async () => {
+      mockJsonResponse({ data: { viewer: { login: "optio-app[bot]" } } });
+      await expect(platform.getViewerLogin(ri)).resolves.toBe("optio-app[bot]");
+    });
+
     it("lists the PR's threads with first-comment ids and the viewer", async () => {
       mockJsonResponse({
         data: {
@@ -231,7 +242,15 @@ describe("GitHubPlatform", () => {
                 nodes: [
                   {
                     id: "PRRT_1",
-                    comments: { nodes: [{ databaseId: 11, author: { login: "optio-bot" } }] },
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 11,
+                          author: { login: "optio-bot" },
+                          pullRequestReview: { databaseId: 900 },
+                        },
+                      ],
+                    },
                   },
                 ],
               },
@@ -258,8 +277,18 @@ describe("GitHubPlatform", () => {
       expect(res).toEqual({
         viewerLogin: "optio-bot",
         threads: [
-          { threadId: "PRRT_1", firstCommentId: 11, firstCommentAuthor: "optio-bot" },
-          { threadId: "PRRT_2", firstCommentId: 22, firstCommentAuthor: null },
+          {
+            threadId: "PRRT_1",
+            firstCommentId: 11,
+            firstCommentAuthor: "optio-bot",
+            firstCommentReviewId: 900,
+          },
+          {
+            threadId: "PRRT_2",
+            firstCommentId: 22,
+            firstCommentAuthor: null,
+            firstCommentReviewId: null,
+          },
         ],
       });
       const first = JSON.parse(mockFetch.mock.calls[0][1].body);

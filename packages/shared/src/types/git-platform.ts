@@ -118,6 +118,8 @@ export interface ReviewThreadInfo {
   threadId: string;
   firstCommentId: number;
   firstCommentAuthor: string | null;
+  /** GitHub review the first comment belongs to, to recognise Optio's own inline comments. */
+  firstCommentReviewId?: number | null;
 }
 
 export interface GitPlatform {
@@ -162,7 +164,9 @@ export interface GitPlatform {
       /** Pin the approval to the commit reviewed. */
       commitId?: string;
     },
-  ): Promise<{ url: string }>;
+  ): Promise<{ url: string; reviewId?: number }>;
+  /** Login of the account the token acts as. Platforms without threads leave it out. */
+  getViewerLogin?(ri: RepoIdentifier): Promise<string>;
   /** Reply on an existing review thread. Platforms without threads leave it out. */
   replyToReviewThread?(
     ri: RepoIdentifier,

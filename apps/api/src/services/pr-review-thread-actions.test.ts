@@ -6,6 +6,7 @@ import {
   hasEnabledThreadActions,
   hasPendingThreadActions,
   withProgress,
+  threadActionFingerprint,
   awaitsPerson,
   isThreadsOnly,
   threadActionSchema,
@@ -248,7 +249,7 @@ describe("runThreadActions", () => {
       { threadId: "human", commentId: 9, action: "resolve" },
     ]);
     expect(calls).toEqual([]);
-    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("not written by") });
+    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("not started by") });
   });
 
   it("compares the author case-insensitively", async () => {
@@ -366,6 +367,7 @@ describe("runThreadActions", () => {
 describe("thread action progress", () => {
   const base = { threadId: "a", commentId: 1 } as const;
   const both: PrReviewThreadAction = { ...base, action: "reply_resolve", body: "Fixed" };
+  const FP = threadActionFingerprint(both);
   const row = (threadActions: PrReviewThreadAction[], threadActionProgress = {}) => ({
     threadActions,
     threadActionProgress,
@@ -405,7 +407,9 @@ describe("thread action progress", () => {
 
   it("skips a reply that already landed and only resolves", async () => {
     const { p, calls } = platform();
-    const [r] = await runThreadActions(p, ri, 5, [both], { progress: { a: { replied: true } } });
+    const [r] = await runThreadActions(p, ri, 5, [both], {
+      progress: { a: { fp: FP, replied: true } },
+    });
     expect(calls).toEqual(["resolve"]);
     expect(r.status).toBe("done");
   });
@@ -415,7 +419,7 @@ describe("thread action progress", () => {
     const listSpy = vi.fn(p.listReviewThreads);
     p.listReviewThreads = listSpy;
     const [r] = await runThreadActions(p, ri, 5, [both], {
-      progress: { a: { replied: true, resolved: true } },
+      progress: { a: { fp: FP, replied: true, resolved: true } },
     });
     expect(r.status).toBe("done");
     expect(calls).toEqual([]);
@@ -423,9 +427,9 @@ describe("thread action progress", () => {
   });
 
   it("records a refusal as terminal and never looks again", async () => {
-    const { p, calls } = platform("someone-else");
+    const { p, calls } = platform();
     const steps: string[] = [];
-    const first = await runThreadActions(p, ri, 5, [both], {
+    const first = await runThreadActions(p, ri, 5, [{ ...both, commentId: 99 }], {
       onStep: (id, step) => {
         steps.push(step);
       },
@@ -434,26 +438,132 @@ describe("thread action progress", () => {
     expect(first[0]).toMatchObject({ status: "failed", error: expect.stringContaining("Refused") });
     const listSpy = vi.fn(p.listReviewThreads);
     p.listReviewThreads = listSpy;
-    const again = await runThreadActions(p, ri, 5, [both], { progress: { a: { refused: true } } });
+    const again = await runThreadActions(p, ri, 5, [{ ...both, commentId: 99 }], {
+      progress: { a: { fp: threadActionFingerprint({ ...both, commentId: 99 }), refused: true } },
+    });
     expect(again[0].status).toBe("failed");
     expect(listSpy).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
   });
 
+  it("ignores progress recorded for another version of the action", async () => {
+    const { p, calls } = platform();
+    const edited = { ...both, body: "A better reply" };
+    await runThreadActions(p, ri, 5, [edited], {
+      progress: { a: { fp: FP, replied: true, resolved: true } },
+    });
+    expect(calls).toEqual(["reply", "resolve"]);
+    expect(
+      withProgress(row([edited], { a: { fp: FP, refused: true } })).threadActions[0],
+    ).not.toHaveProperty("refused");
+    const fixed = { ...both, commentId: 2 };
+    expect(hasPendingThreadActions(row([fixed], { a: { fp: FP, refused: true } }))).toBe(true);
+  });
+
   it("merges progress into the actions for display", () => {
-    const merged = withProgress(row([both], { a: { replied: true } }));
+    const merged = withProgress(row([both], { a: { fp: FP, replied: true } }));
     expect(merged.threadActions[0]).toMatchObject({ replied: true });
     expect(both).not.toHaveProperty("replied");
   });
 
   it("knows which drafts still have work", () => {
     expect(hasPendingThreadActions(row([both]))).toBe(true);
-    expect(hasPendingThreadActions(row([both], { a: { replied: true } }))).toBe(true);
-    expect(hasPendingThreadActions(row([both], { a: { replied: true, resolved: true } }))).toBe(
-      false,
-    );
+    expect(hasPendingThreadActions(row([both], { a: { fp: FP, replied: true } }))).toBe(true);
+    expect(
+      hasPendingThreadActions(row([both], { a: { fp: FP, replied: true, resolved: true } })),
+    ).toBe(false);
     expect(hasPendingThreadActions(row([{ ...both, enabled: false }]))).toBe(false);
-    expect(hasPendingThreadActions(row([both], { a: { refused: true } }))).toBe(false);
+    expect(hasPendingThreadActions(row([both], { a: { fp: FP, refused: true } }))).toBe(false);
+  });
+});
+
+describe("thread author identities", () => {
+  const threads = [
+    {
+      threadId: "a",
+      firstCommentId: 1,
+      firstCommentAuthor: "optio-app[bot]",
+      firstCommentReviewId: 77,
+    },
+    { threadId: "b", firstCommentId: 2, firstCommentAuthor: "alice", firstCommentReviewId: null },
+    { threadId: "c", firstCommentId: 3, firstCommentAuthor: "mallory", firstCommentReviewId: 5 },
+  ];
+  function platform() {
+    const calls: string[] = [];
+    const p = {
+      type: "github",
+      listReviewThreads: async () => ({ viewerLogin: "alice", threads }),
+      replyToReviewThread: async () => {
+        calls.push("reply");
+      },
+      resolveReviewThread: async () => {
+        calls.push("resolve");
+      },
+    } as unknown as GitPlatform;
+    return { p, calls };
+  }
+  const a = (threadId: string, commentId: number): PrReviewThreadAction => ({
+    threadId,
+    commentId,
+    action: "reply",
+    body: "x",
+  });
+
+  it("lets a person act on a thread the server bot started", async () => {
+    const { p, calls } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [a("a", 1)], {
+      otherLogins: async () => ["Optio-App"],
+    });
+    expect(r.status).toBe("done");
+    expect(calls).toEqual(["reply"]);
+  });
+
+  it("lets the server act on a thread a person started", async () => {
+    const { p } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [a("b", 2)], { otherLogins: async () => [] });
+    expect(r.status).toBe("done");
+  });
+
+  it("accepts a thread whose first comment belongs to a review Optio posted", async () => {
+    const { p } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [a("c", 3)], { postedReviewIds: [5] });
+    expect(r.status).toBe("done");
+  });
+
+  it("keeps an author mismatch pending, reported, and retryable by a person", async () => {
+    const { p, calls } = platform();
+    const steps: string[] = [];
+    const act = a("c", 3);
+    const [r] = await runThreadActions(p, ri, 5, [act], {
+      onStep: (_id, step) => {
+        steps.push(step);
+      },
+    });
+    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("not started by") });
+    expect(steps).toEqual(["authorMismatch"]);
+    const progress = { c: { fp: threadActionFingerprint(act), authorMismatch: true } };
+    expect(hasPendingThreadActions({ threadActions: [act], threadActionProgress: progress })).toBe(
+      true,
+    );
+
+    const [again] = await runThreadActions(p, ri, 5, [act], { progress, postedReviewIds: [5] });
+    expect(again.status).toBe("done");
+    expect(calls).toEqual(["reply"]);
+
+    const [auto] = await runThreadActions(p, ri, 5, [act], { progress, unattended: true });
+    expect(auto.status).toBe("failed");
+  });
+
+  it("does not make an author mismatch keep an unattended draft awake", () => {
+    const act = a("c", 3);
+    const draft = {
+      verdict: "comment",
+      summary: "",
+      fileComments: [],
+      threadActions: [act],
+      threadActionProgress: { c: { fp: threadActionFingerprint(act), authorMismatch: true } },
+    };
+    expect(awaitsPerson(draft)).toBe(true);
   });
 });
 
@@ -482,7 +592,13 @@ describe("awaitsPerson", () => {
   });
 
   it("is true again once the only unattended reply landed or was refused", () => {
-    expect(awaitsPerson(draft([resolve, reply], { b: { replied: true } }))).toBe(true);
-    expect(awaitsPerson(draft([reply], { b: { refused: true } }))).toBe(true);
+    expect(
+      awaitsPerson(
+        draft([resolve, reply], { b: { fp: threadActionFingerprint(reply), replied: true } }),
+      ),
+    ).toBe(true);
+    expect(
+      awaitsPerson(draft([reply], { b: { fp: threadActionFingerprint(reply), refused: true } })),
+    ).toBe(true);
   });
 });

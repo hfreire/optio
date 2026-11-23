@@ -699,6 +699,13 @@ export class GitLabPlatform implements GitPlatform {
     );
   }
 
+  async getViewerLogin(ri: RepoIdentifier): Promise<string> {
+    const me = await this.fetchJson<{ username: string }>(`${ri.apiBaseUrl}/user`, {
+      headers: this.headers(),
+    });
+    return me.username;
+  }
+
   async listReviewThreads(
     ri: RepoIdentifier,
     prNumber: number,

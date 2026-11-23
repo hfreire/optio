@@ -1662,6 +1662,10 @@ export const prReviews = pgTable(
       .$type<PrReviewThreadProgress>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    postedReviewIds: jsonb("posted_review_ids")
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     origin: text("origin").notNull().default("manual"), // "manual" | "auto"
     userEngaged: boolean("user_engaged").notNull().default(false),
     autoSubmitted: boolean("auto_submitted").notNull().default(false),

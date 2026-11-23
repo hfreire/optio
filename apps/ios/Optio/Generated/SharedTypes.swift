@@ -3699,17 +3699,26 @@ public struct ReviewThreadInfo: Codable, Hashable, Sendable {
     public let threadId: String
     public let firstCommentId: Double
     public let firstCommentAuthor: String?
+    /// GitHub review the first comment belongs to, to recognise Optio's own inline comments.
+    public let firstCommentReviewId: Double?
 
     private enum CodingKeys: String, CodingKey {
         case threadId = "threadId"
         case firstCommentId = "firstCommentId"
         case firstCommentAuthor = "firstCommentAuthor"
+        case firstCommentReviewId = "firstCommentReviewId"
     }
 
-    public init(threadId: String, firstCommentId: Double, firstCommentAuthor: String? = nil) {
+    public init(
+        threadId: String,
+        firstCommentId: Double,
+        firstCommentAuthor: String? = nil,
+        firstCommentReviewId: Double? = nil
+    ) {
         self.threadId = threadId
         self.firstCommentId = firstCommentId
         self.firstCommentAuthor = firstCommentAuthor
+        self.firstCommentReviewId = firstCommentReviewId
     }
 }
 
@@ -7820,8 +7829,10 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
     public let replied: Bool?
     /// Read-only: the thread was resolved.
     public let resolved: Bool?
-    /// Read-only: refused as not this account's thread on this PR; never retried.
+    /// Read-only: refused as not a thread on this PR with that first comment; never retried.
     public let refused: Bool?
+    /// Read-only: the thread was started by an account Optio does not post as; retried by a person.
+    public let authorMismatch: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case threadId = "threadId"
@@ -7832,6 +7843,7 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         case replied = "replied"
         case resolved = "resolved"
         case refused = "refused"
+        case authorMismatch = "authorMismatch"
     }
 
     public init(
@@ -7842,7 +7854,8 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         enabled: Bool? = nil,
         replied: Bool? = nil,
         resolved: Bool? = nil,
-        refused: Bool? = nil
+        refused: Bool? = nil,
+        authorMismatch: Bool? = nil
     ) {
         self.threadId = threadId
         self.commentId = commentId
@@ -7852,24 +7865,38 @@ public struct PrReviewThreadAction: Codable, Hashable, Sendable {
         self.replied = replied
         self.resolved = resolved
         self.refused = refused
+        self.authorMismatch = authorMismatch
     }
 }
 
 public struct PrReviewThreadProgressItem: Codable, Hashable, Sendable {
+    /// Identity of the action the steps belong to; a mismatch means the action was edited.
+    public let fp: String?
     public let replied: Bool?
     public let resolved: Bool?
     public let refused: Bool?
+    public let authorMismatch: Bool?
 
     private enum CodingKeys: String, CodingKey {
+        case fp = "fp"
         case replied = "replied"
         case resolved = "resolved"
         case refused = "refused"
+        case authorMismatch = "authorMismatch"
     }
 
-    public init(replied: Bool? = nil, resolved: Bool? = nil, refused: Bool? = nil) {
+    public init(
+        fp: String? = nil,
+        replied: Bool? = nil,
+        resolved: Bool? = nil,
+        refused: Bool? = nil,
+        authorMismatch: Bool? = nil
+    ) {
+        self.fp = fp
         self.replied = replied
         self.resolved = resolved
         self.refused = refused
+        self.authorMismatch = authorMismatch
     }
 }
 
