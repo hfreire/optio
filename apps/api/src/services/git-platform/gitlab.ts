@@ -3,6 +3,7 @@ import { guardedFetch } from "../../utils/outbound-url.js";
 import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/shared";
 import { defaultBranchFirst } from "./pr-search.js";
 import type {
+  ReviewThreadInfo,
   GitPlatform,
   RepoIdentifier,
   PullRequest,
@@ -696,6 +697,37 @@ export class GitLabPlatform implements GitPlatform {
       ),
       { method: "POST", headers: this.headers(true), body: JSON.stringify({ body }) },
     );
+  }
+
+  async listReviewThreads(
+    ri: RepoIdentifier,
+    prNumber: number,
+  ): Promise<{ viewerLogin: string; threads: ReviewThreadInfo[] }> {
+    const me = await this.fetchJson<{ username: string }>(`${ri.apiBaseUrl}/user`, {
+      headers: this.headers(),
+    });
+    type Discussion = {
+      id: string;
+      notes?: Array<{ id: number; author?: { username?: string } | null }>;
+    };
+    const threads: ReviewThreadInfo[] = [];
+    for (let page = 1; page <= 50; page++) {
+      const batch = await this.fetchJson<Discussion[]>(
+        this.url(ri, `/merge_requests/${prNumber}/discussions?per_page=100&page=${page}`),
+        { headers: this.headers() },
+      );
+      for (const d of batch) {
+        const first = d.notes?.[0];
+        if (!first) continue;
+        threads.push({
+          threadId: d.id,
+          firstCommentId: first.id,
+          firstCommentAuthor: first.author?.username ?? null,
+        });
+      }
+      if (batch.length < 100) return { viewerLogin: me.username, threads };
+    }
+    throw new GitLabApiError(422, "too many discussions");
   }
 
   async resolveReviewThread(ri: RepoIdentifier, prNumber: number, threadId: string): Promise<void> {

@@ -3,6 +3,7 @@ import type { Branch, BrowsableRepository, PlatformLocation } from "@optio/share
 import { githubGraphqlUrl } from "./github-pr-facts.js";
 import { defaultBranchFirst, filterBranches } from "./pr-search.js";
 import type {
+  ReviewThreadInfo,
   GitPlatform,
   RepoIdentifier,
   PullRequest,
@@ -368,6 +369,73 @@ export class GitHubPlatform implements GitPlatform {
       headers: this.headers(true),
       body: JSON.stringify({ body }),
     });
+  }
+
+  async listReviewThreads(
+    ri: RepoIdentifier,
+    prNumber: number,
+  ): Promise<{ viewerLogin: string; threads: ReviewThreadInfo[] }> {
+    const query = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+      viewer { login }
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id comments(first: 1) { nodes { databaseId author { login } } } }
+          }
+        }
+      }
+    }`;
+    type Page = {
+      errors?: Array<{ message: string }>;
+      data?: {
+        viewer: { login: string };
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: boolean; endCursor: string | null };
+              nodes: Array<{
+                id: string;
+                comments: {
+                  nodes: Array<{ databaseId: number; author: { login: string } | null }>;
+                };
+              }>;
+            };
+          } | null;
+        } | null;
+      };
+    };
+    const threads: ReviewThreadInfo[] = [];
+    let viewerLogin = "";
+    let after: string | null = null;
+    for (let page = 0; page < 50; page++) {
+      const res: Page = await this.fetchJson<Page>(githubGraphqlUrl(ri.apiBaseUrl), {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({
+          query,
+          variables: { owner: ri.owner, repo: ri.repo, number: prNumber, after },
+        }),
+      });
+      const connection = res.data?.repository?.pullRequest?.reviewThreads;
+      if (res.errors?.length || !res.data || !connection) {
+        const message = res.errors?.map((e) => e.message).join("; ") ?? "pull request not found";
+        throw new GitHubApiError(422, JSON.stringify({ message }));
+      }
+      viewerLogin = res.data.viewer.login;
+      for (const node of connection.nodes) {
+        const first = node.comments.nodes[0];
+        if (!first) continue;
+        threads.push({
+          threadId: node.id,
+          firstCommentId: first.databaseId,
+          firstCommentAuthor: first.author?.login ?? null,
+        });
+      }
+      if (!connection.pageInfo.hasNextPage) return { viewerLogin, threads };
+      after = connection.pageInfo.endCursor;
+    }
+    throw new GitHubApiError(422, JSON.stringify({ message: "too many review threads" }));
   }
 
   async resolveReviewThread(ri: RepoIdentifier, _prNumber: number, threadId: string) {

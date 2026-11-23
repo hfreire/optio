@@ -220,6 +220,60 @@ describe("GitHubPlatform", () => {
   });
 
   describe("review thread actions", () => {
+    it("lists the PR's threads with first-comment ids and the viewer", async () => {
+      mockJsonResponse({
+        data: {
+          viewer: { login: "optio-bot" },
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+                nodes: [
+                  {
+                    id: "PRRT_1",
+                    comments: { nodes: [{ databaseId: 11, author: { login: "optio-bot" } }] },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      });
+      mockJsonResponse({
+        data: {
+          viewer: { login: "optio-bot" },
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [{ id: "PRRT_2", comments: { nodes: [{ databaseId: 22, author: null }] } }],
+              },
+            },
+          },
+        },
+      });
+
+      const res = await platform.listReviewThreads(ri, 42);
+
+      expect(res).toEqual({
+        viewerLogin: "optio-bot",
+        threads: [
+          { threadId: "PRRT_1", firstCommentId: 11, firstCommentAuthor: "optio-bot" },
+          { threadId: "PRRT_2", firstCommentId: 22, firstCommentAuthor: null },
+        ],
+      });
+      const first = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(first.variables).toMatchObject({ owner: "acme", repo: "widgets", number: 42 });
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).variables.after).toBe("c1");
+    });
+
+    it("throws when the lookup returns GraphQL errors or no pull request", async () => {
+      mockJsonResponse({ errors: [{ message: "nope" }] });
+      await expect(platform.listReviewThreads(ri, 42)).rejects.toThrow();
+      mockJsonResponse({ data: { viewer: { login: "x" }, repository: { pullRequest: null } } });
+      await expect(platform.listReviewThreads(ri, 42)).rejects.toThrow();
+    });
+
     it("replies through the comment replies endpoint", async () => {
       mockJsonResponse({ id: 9 });
 

@@ -642,6 +642,25 @@ describe("GitLabPlatform", () => {
   });
 
   describe("review thread actions", () => {
+    it("lists the MR's discussions with first-note ids and the current user", async () => {
+      mockJsonResponse({ username: "optio-bot" });
+      mockJsonResponse([
+        { id: "d1", notes: [{ id: 5, author: { username: "optio-bot" } }, { id: 6 }] },
+        { id: "d2", notes: [] },
+      ]);
+
+      const res = await platform.listReviewThreads(ri, 7);
+
+      expect(res).toEqual({
+        viewerLogin: "optio-bot",
+        threads: [{ threadId: "d1", firstCommentId: 5, firstCommentAuthor: "optio-bot" }],
+      });
+      expect(mockFetch.mock.calls[0][0]).toBe("https://gitlab.com/api/v4/user");
+      expect(mockFetch.mock.calls[1][0]).toContain(
+        `/projects/${projectId}/merge_requests/7/discussions?per_page=100&page=1`,
+      );
+    });
+
     it("replies with a note on the discussion", async () => {
       mockJsonResponse({});
 

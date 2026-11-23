@@ -17,6 +17,14 @@ const platform = {
     calls.push("review");
     return { url: "https://github.com/o/r/pull/1#review" };
   }),
+  listReviewThreads: vi.fn(async () => ({
+    viewerLogin: "optio-bot",
+    threads: [
+      { threadId: "A", firstCommentId: 1, firstCommentAuthor: "optio-bot" },
+      { threadId: "B", firstCommentId: 2, firstCommentAuthor: "optio-bot" },
+      { threadId: "C", firstCommentId: 3, firstCommentAuthor: "optio-bot" },
+    ],
+  })),
   replyToReviewThread: vi.fn(async (_ri: unknown, _n: number, t: { threadId: string }) => {
     calls.push(`reply:${t.threadId}`);
   }),
@@ -215,6 +223,19 @@ describe("submitReview with thread actions", () => {
       { threadId: "C", status: "done" },
     ]);
     expect(result.review.state).toBe("submitted");
+  });
+
+  it("refuses an injected thread id and reports it", async () => {
+    const review = await insertReview({
+      summary: "s",
+      threadActions: [{ threadId: "OTHER_PR", commentId: 1, action: "resolve" }, resolveA],
+    });
+    const result = await submitReview(review.id);
+    expect(calls).toEqual(["review", "resolve:A"]);
+    expect(result.threadActionResults).toMatchObject([
+      { threadId: "OTHER_PR", status: "failed" },
+      { threadId: "A", status: "done" },
+    ]);
   });
 
   it("runs no action when posting the review fails", async () => {

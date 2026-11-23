@@ -99,6 +99,15 @@ describe("runThreadActions", () => {
   function platform(over: Partial<GitPlatform> = {}) {
     const calls: string[] = [];
     const p = {
+      listReviewThreads: vi.fn(async () => ({
+        viewerLogin: "optio-bot",
+        threads: [
+          { threadId: "a", firstCommentId: 1, firstCommentAuthor: "optio-bot" },
+          { threadId: "b", firstCommentId: 2, firstCommentAuthor: "optio-bot" },
+          { threadId: "c", firstCommentId: 3, firstCommentAuthor: "optio-bot" },
+          { threadId: "human", firstCommentId: 9, firstCommentAuthor: "someone" },
+        ],
+      })),
       replyToReviewThread: vi.fn(async (_ri, _n, t, body) => {
         calls.push(`reply:${t.threadId}:${body}`);
       }),
@@ -165,6 +174,88 @@ describe("runThreadActions", () => {
       { threadId: "b", commentId: 2, action: "reply_resolve", body: "x" },
     ]);
     expect(r).toMatchObject({ status: "failed", error: "boom" });
+  });
+
+  it("refuses a thread that is not on this PR, without calling reply or resolve", async () => {
+    const { p, calls } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [
+      { threadId: "other-pr", commentId: 1, action: "reply_resolve", body: "x" },
+    ]);
+    expect(calls).toEqual([]);
+    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("not on this PR") });
+  });
+
+  it("refuses a commentId that is not the first comment of the thread", async () => {
+    const { p, calls } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [
+      { threadId: "a", commentId: 99, action: "reply", body: "x" },
+    ]);
+    expect(calls).toEqual([]);
+    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("first comment") });
+  });
+
+  it("refuses a thread whose first comment is not from the authenticated account", async () => {
+    const { p, calls } = platform();
+    const [r] = await runThreadActions(p, ri, 5, [
+      { threadId: "human", commentId: 9, action: "resolve" },
+    ]);
+    expect(calls).toEqual([]);
+    expect(r).toMatchObject({ status: "failed", error: expect.stringContaining("not written by") });
+  });
+
+  it("compares the author case-insensitively", async () => {
+    const { p, calls } = platform({
+      listReviewThreads: vi.fn(async () => ({
+        viewerLogin: "Optio-Bot",
+        threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: "optio-bot" }],
+      })),
+    });
+    await runThreadActions(p, ri, 5, [{ threadId: "a", commentId: 1, action: "resolve" }]);
+    expect(calls).toEqual(["resolve:a"]);
+  });
+
+  it("still runs the valid actions when another is refused", async () => {
+    const { p, calls } = platform();
+    const results = await runThreadActions(p, ri, 5, [
+      { threadId: "other-pr", commentId: 1, action: "resolve" },
+      { threadId: "a", commentId: 1, action: "resolve" },
+    ]);
+    expect(calls).toEqual(["resolve:a"]);
+    expect(results.map((r) => r.status)).toEqual(["failed", "done"]);
+  });
+
+  it("fails closed when the thread lookup fails or is unsupported", async () => {
+    const failing = platform({
+      listReviewThreads: vi.fn(async () => {
+        throw new Error("lookup down");
+      }),
+    });
+    const [r1] = await runThreadActions(failing.p, ri, 5, [
+      { threadId: "a", commentId: 1, action: "resolve" },
+    ]);
+    expect(failing.calls).toEqual([]);
+    expect(r1).toMatchObject({ status: "failed", error: expect.stringContaining("lookup down") });
+
+    const noLookup = platform({ listReviewThreads: undefined });
+    const [r2] = await runThreadActions(noLookup.p, ri, 5, [
+      { threadId: "a", commentId: 1, action: "resolve" },
+    ]);
+    expect(noLookup.calls).toEqual([]);
+    expect(r2).toMatchObject({ status: "skipped" });
+  });
+
+  it("looks threads up once and not at all when everything is disabled", async () => {
+    const { p } = platform();
+    await runThreadActions(p, ri, 5, [
+      { threadId: "a", commentId: 1, action: "resolve" },
+      { threadId: "b", commentId: 2, action: "resolve" },
+    ]);
+    expect(p.listReviewThreads).toHaveBeenCalledTimes(1);
+    const second = platform();
+    await runThreadActions(second.p, ri, 5, [
+      { threadId: "a", commentId: 1, action: "resolve", enabled: false },
+    ]);
+    expect(second.p.listReviewThreads).not.toHaveBeenCalled();
   });
 
   it("skips and reports on a platform without thread support", async () => {

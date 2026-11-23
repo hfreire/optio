@@ -114,6 +114,12 @@ export interface Branch {
   protected?: boolean;
 }
 
+export interface ReviewThreadInfo {
+  threadId: string;
+  firstCommentId: number;
+  firstCommentAuthor: string | null;
+}
+
 export interface GitPlatform {
   readonly type: GitPlatformType;
 
@@ -164,6 +170,11 @@ export interface GitPlatform {
     thread: { threadId: string; commentId: number },
     body: string,
   ): Promise<void>;
+  /** The PR's own review threads and the authenticated account, to vet thread actions. */
+  listReviewThreads?(
+    ri: RepoIdentifier,
+    prNumber: number,
+  ): Promise<{ viewerLogin: string; threads: ReviewThreadInfo[] }>;
   /** Mark an existing review thread resolved. Platforms without threads leave it out. */
   resolveReviewThread?(ri: RepoIdentifier, prNumber: number, threadId: string): Promise<void>;
 

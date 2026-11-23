@@ -3695,6 +3695,24 @@ public struct Branch: Codable, Hashable, Sendable {
     }
 }
 
+public struct ReviewThreadInfo: Codable, Hashable, Sendable {
+    public let threadId: String
+    public let firstCommentId: Double
+    public let firstCommentAuthor: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case firstCommentId = "firstCommentId"
+        case firstCommentAuthor = "firstCommentAuthor"
+    }
+
+    public init(threadId: String, firstCommentId: Double, firstCommentAuthor: String? = nil) {
+        self.threadId = threadId
+        self.firstCommentId = firstCommentId
+        self.firstCommentAuthor = firstCommentAuthor
+    }
+}
+
 // MARK: - image.ts
 
 public enum PresetImageId: String, Codable, Hashable, Sendable, CaseIterable {

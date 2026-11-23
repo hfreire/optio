@@ -1581,6 +1581,13 @@ data class Branch(
     val protected: Boolean? = null,
 )
 
+@Serializable
+data class ReviewThreadInfo(
+    val threadId: String,
+    val firstCommentId: Double,
+    val firstCommentAuthor: String? = null,
+)
+
 // endregion
 
 // region glance.ts

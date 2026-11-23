@@ -4,6 +4,7 @@ import type {
   PrReviewThreadAction,
   PrReviewThreadActionResult,
   RepoIdentifier,
+  ReviewThreadInfo,
 } from "@optio/shared";
 import { logger as rootLogger } from "../logger.js";
 
@@ -58,6 +59,21 @@ export function hasEnabledThreadActions(actions: PrReviewThreadAction[]): boolea
   return actions.some((a) => a.enabled !== false);
 }
 
+type ThreadLookup = { viewerLogin: string; threads: ReviewThreadInfo[] };
+
+/** Agent-drafted ids are untrusted: only act on this PR's threads that this account started. */
+function vetThread(lookup: ThreadLookup, a: PrReviewThreadAction): string | null {
+  const thread = lookup.threads.find((t) => t.threadId === a.threadId);
+  if (!thread) return "Refused: thread is not on this PR";
+  if (thread.firstCommentId !== a.commentId) {
+    return "Refused: commentId is not the first comment of the thread";
+  }
+  if (thread.firstCommentAuthor?.toLowerCase() !== lookup.viewerLogin.toLowerCase()) {
+    return "Refused: thread was not written by the authenticated account";
+  }
+  return null;
+}
+
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /** Run each enabled action in order; one failing never stops or undoes the others. */
@@ -68,6 +84,8 @@ export async function runThreadActions(
   actions: PrReviewThreadAction[],
 ): Promise<PrReviewThreadActionResult[]> {
   const results: PrReviewThreadActionResult[] = [];
+  let lookup: Promise<ThreadLookup> | null = null;
+  const lookupOnce = () => (lookup ??= platform.listReviewThreads!(ri, prNumber));
   for (const a of actions) {
     const base = { threadId: a.threadId, action: a.action };
     if (a.enabled === false) {
@@ -87,7 +105,20 @@ export async function runThreadActions(
       });
       continue;
     }
+    if (!platform.listReviewThreads) {
+      results.push({
+        ...base,
+        status: "skipped",
+        error: `Cannot verify review threads on ${platform.type}`,
+      });
+      continue;
+    }
     try {
+      const refusal = vetThread(await lookupOnce(), a);
+      if (refusal) {
+        results.push({ ...base, status: "failed", error: refusal });
+        continue;
+      }
       if (needsReply) {
         await platform.replyToReviewThread!(
           ri,
