@@ -18,7 +18,7 @@ export const threadActionSchema = z
     enabled: z.boolean().optional(),
   })
   .superRefine((a, ctx) => {
-    if (a.action !== "resolve" && !a.body?.trim()) {
+    if (a.action !== "resolve" && a.enabled !== false && !a.body?.trim()) {
       ctx.addIssue({ code: "custom", path: ["body"], message: `body is required for ${a.action}` });
     }
   })

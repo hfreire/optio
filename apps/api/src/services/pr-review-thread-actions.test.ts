@@ -4,6 +4,7 @@ import {
   parseThreadActions,
   runThreadActions,
   hasEnabledThreadActions,
+  threadActionSchema,
 } from "./pr-review-thread-actions.js";
 
 const warn = vi.fn();
@@ -118,6 +119,13 @@ describe("runThreadActions", () => {
     ]);
     expect(calls).toEqual(["resolve:a", "reply:b:Fixed", "resolve:b", "reply:c:Why?"]);
     expect(results.map((r) => r.status)).toEqual(["done", "done", "done"]);
+  });
+
+  it("accepts a switched-off reply with an empty body", () => {
+    expect(
+      threadActionSchema.safeParse({ threadId: "a", commentId: 1, action: "reply", enabled: false })
+        .success,
+    ).toBe(true);
   });
 
   it("skips disabled actions without calling the platform", async () => {

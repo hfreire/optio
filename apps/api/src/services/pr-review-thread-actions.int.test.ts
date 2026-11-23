@@ -134,6 +134,13 @@ describe("updatePrReviewDraft", () => {
     expect(updated.userEngaged).toBe(true);
   });
 
+  it("rejects duplicate thread ids", async () => {
+    const review = await insertReview();
+    await expect(
+      updatePrReviewDraft(review.id, { threadActions: [resolveA, resolveA] }),
+    ).rejects.toThrow();
+  });
+
   it("rejects a reply without a body", async () => {
     const review = await insertReview();
     await expect(
@@ -164,6 +171,16 @@ describe("submitReview with thread actions", () => {
     expect(calls).toEqual(["resolve:A"]);
     expect(result.reviewUrl).toBeUndefined();
     expect(result.review.state).toBe("submitted");
+  });
+
+  it("still posts an approve verdict when there is nothing else to say", async () => {
+    const review = await insertReview({
+      summary: "",
+      verdict: "approve",
+      threadActions: [resolveA],
+    });
+    await submitReview(review.id);
+    expect(calls).toEqual(["review", "resolve:A"]);
   });
 
   it("posts the review for file comments alone", async () => {

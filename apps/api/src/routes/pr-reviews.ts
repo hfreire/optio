@@ -36,7 +36,7 @@ const ThreadActionSchema = z
     threadId: z.string().min(1).describe("GitHub review-thread node id or GitLab discussion id"),
     commentId: z.number().int().positive().describe("REST id of the thread's first comment"),
     action: z.enum(["resolve", "reply", "reply_resolve"]),
-    body: z.string().optional().describe("Required for reply and reply_resolve"),
+    body: z.string().max(20000).optional().describe("Required for reply and reply_resolve"),
     enabled: z.boolean().optional().describe("Off skips the action on submit (default on)"),
   })
   .describe("An action on an existing review thread");
@@ -64,6 +64,7 @@ const updateReviewSchema = z
       .optional(),
     threadActions: z
       .array(ThreadActionSchema)
+      .max(100)
       .optional()
       .describe("Replies and resolves on existing review threads, run on submit"),
   })

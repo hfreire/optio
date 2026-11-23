@@ -734,7 +734,13 @@ export async function updatePrReviewDraft(
   if (updates.verdict !== undefined) patch.verdict = updates.verdict;
   if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
   if (updates.threadActions !== undefined) {
-    patch.threadActions = z.array(threadActionSchema).parse(updates.threadActions);
+    patch.threadActions = z
+      .array(threadActionSchema)
+      .max(100)
+      .refine((list) => new Set(list.map((t) => t.threadId)).size === list.length, {
+        message: "Duplicate threadId",
+      })
+      .parse(updates.threadActions);
   }
   const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
   return updated;
@@ -868,7 +874,10 @@ export async function submitReview(
 
   const threadActions = review.threadActions ?? [];
   const threadsOnly =
-    hasEnabledThreadActions(threadActions) && !review.summary?.trim() && comments.length === 0;
+    hasEnabledThreadActions(threadActions) &&
+    !review.summary?.trim() &&
+    comments.length === 0 &&
+    (review.verdict === "comment" || !review.verdict);
 
   let reviewUrl: string | undefined;
   if (!threadsOnly) {
