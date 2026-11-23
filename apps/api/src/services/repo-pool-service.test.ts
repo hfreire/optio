@@ -51,6 +51,8 @@ vi.mock("../db/schema.js", () => ({
     state: "state",
     worktreeState: "worktreeState",
     lastPodId: "lastPodId",
+    attachLeaseUntil: "attachLeaseUntil",
+    lastActivityAt: "lastActivityAt",
     updatedAt: "updatedAt",
   },
   interactiveSessions: {
@@ -568,7 +570,7 @@ describe("reconcileActiveTaskCounts", () => {
     );
   });
 
-  it("counts only running/provisioning tasks that record a pod, grouped by pod", async () => {
+  it("counts running/provisioning or attached and active tasks that record a pod, grouped by pod", async () => {
     (db as any).groupBy.mockResolvedValueOnce([
       { podId: "pod-1", n: 2 },
       { podId: "pod-2", n: 1 },
@@ -582,8 +584,15 @@ describe("reconcileActiveTaskCounts", () => {
       .mocked(sql)
       .mock.calls.find(([strings]) => strings.join("?").includes("IN ('running', 'provisioning')"));
     expect(filter).toBeDefined();
-    expect(filter!.slice(1)).toEqual(["state", "lastPodId"]); // tasks.state, tasks.lastPodId
+    expect(filter!.slice(1)).toEqual([
+      "lastPodId",
+      "state",
+      "attachLeaseUntil",
+      "lastActivityAt",
+      300_000,
+    ]);
     expect(filter![0].join("?")).toContain("IS NOT NULL");
+    expect(filter![0].join("?")).toContain("> now()");
     expect((db as any).groupBy).toHaveBeenCalledWith("lastPodId");
     expect(podPool.reconcileActiveCounts).toHaveBeenCalledWith(
       "repo",
@@ -1220,6 +1229,26 @@ describe("startTaskInRepoPod", () => {
     ).rejects.toThrow("start script failed");
     expect(podPool.acquireSlot).toHaveBeenCalledWith("pod-2");
     expect(podPool.releaseSlot).toHaveBeenCalledWith("pod-2");
+  });
+
+  it("leaves a slot its caller reserved with the pick alone, on a failed start too (#809)", async () => {
+    vi.mocked(podPool.acquireSlot).mockClear();
+    vi.mocked(podPool.releaseSlot).mockClear();
+    const pod = repoPod({ id: "pod-3", podName: "optio-repo-org-repo-0", state: "ready" });
+    mockRuntimeStartRun.mockResolvedValueOnce({ pid: 42, output: "" });
+    await startTaskInRepoPod(
+      pod,
+      "task-3",
+      ["agent"],
+      {},
+      { initialStdin: "", slotReserved: true },
+    );
+    mockRuntimeStartRun.mockRejectedValueOnce(new Error("start script failed"));
+    await expect(
+      startTaskInRepoPod(pod, "task-4", ["agent"], {}, { initialStdin: "", slotReserved: true }),
+    ).rejects.toThrow("start script failed");
+    expect(podPool.acquireSlot).not.toHaveBeenCalled();
+    expect(podPool.releaseSlot).not.toHaveBeenCalled();
   });
 });
 
