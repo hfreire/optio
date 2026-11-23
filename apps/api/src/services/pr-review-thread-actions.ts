@@ -10,14 +10,23 @@ import { logger as rootLogger } from "../logger.js";
 
 type WarnLogger = Pick<typeof rootLogger, "warn">;
 
-export const threadActionSchema = z
-  .object({
-    threadId: z.string().min(1),
-    commentId: z.number().int().positive(),
-    action: z.enum(["resolve", "reply", "reply_resolve"]),
-    body: z.string().optional(),
-    enabled: z.boolean().optional(),
-  })
+export const MAX_THREAD_ACTIONS = 100;
+const MAX_BODY_LENGTH = 20000;
+
+/** Field shape shared by the REST route, the MCP tool and the service so limits can't drift. */
+export const threadActionShape = z.object({
+  threadId: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe("GitHub review-thread node id or GitLab discussion id"),
+  commentId: z.number().int().positive().describe("REST id of the thread's first comment"),
+  action: z.enum(["resolve", "reply", "reply_resolve"]),
+  body: z.string().max(MAX_BODY_LENGTH).optional().describe("Required for reply and reply_resolve"),
+  enabled: z.boolean().optional().describe("Off skips the action on submit (default on)"),
+});
+
+export const threadActionSchema = threadActionShape
   .superRefine((a, ctx) => {
     if (a.action !== "resolve" && a.enabled !== false && !a.body?.trim()) {
       ctx.addIssue({ code: "custom", path: ["body"], message: `body is required for ${a.action}` });
@@ -31,6 +40,49 @@ export const threadActionSchema = z
     enabled: a.enabled ?? true,
   }));
 
+/** Nothing reached the platform: the review post was skipped and no thread action ran. */
+export class ThreadActionsNotAppliedError extends Error {
+  constructor(readonly results: PrReviewThreadActionResult[]) {
+    super(
+      `Nothing was submitted: ${results.map((r) => `${r.threadId} ${r.status}${r.error ? ` (${r.error})` : ""}`).join("; ")}`,
+    );
+    this.name = "ThreadActionsNotAppliedError";
+  }
+}
+
+export class ThreadActionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ThreadActionValidationError";
+  }
+}
+
+const listSchema = z
+  .array(threadActionSchema)
+  .max(MAX_THREAD_ACTIONS)
+  .superRefine((list, ctx) => {
+    if (new Set(list.map((t) => t.threadId)).size !== list.length) {
+      ctx.addIssue({ code: "custom", message: "Duplicate threadId" });
+    }
+  });
+
+const formatPath = (path: Array<string | number>): string =>
+  path.reduce<string>(
+    (acc, part) => (typeof part === "number" ? `${acc}[${part}]` : `${acc}.${part}`),
+    "threadActions",
+  );
+
+/** Validate a person's or API client's list; throws a readable ThreadActionValidationError. */
+export const threadActionsSchema = {
+  parse(raw: unknown): PrReviewThreadAction[] {
+    const res = listSchema.safeParse(raw);
+    if (res.success) return res.data;
+    throw new ThreadActionValidationError(
+      res.error.issues.map((i) => `${formatPath(i.path)}: ${i.message}`).join("; "),
+    );
+  },
+};
+
 /** Strictly parse an agent's or user's `threadActions`, dropping invalid entries with a warning. */
 export function parseThreadActions(
   raw: unknown,
@@ -40,6 +92,10 @@ export function parseThreadActions(
   const seen = new Set<string>();
   const out: PrReviewThreadAction[] = [];
   raw.forEach((entry, index) => {
+    if (out.length >= MAX_THREAD_ACTIONS) {
+      log.warn({ index }, "Dropping review thread action over the per-review limit");
+      return;
+    }
     const parsed = threadActionSchema.safeParse(entry);
     if (!parsed.success) {
       log.warn({ index, issues: parsed.error.issues }, "Dropping invalid review thread action");
@@ -59,6 +115,8 @@ export function hasEnabledThreadActions(actions: PrReviewThreadAction[]): boolea
   return actions.some((a) => a.enabled !== false);
 }
 
+const normalizeLogin = (login: string): string => login.replace(/\[bot\]$/i, "").toLowerCase();
+
 type ThreadLookup = { viewerLogin: string; threads: ReviewThreadInfo[] };
 
 /** Agent-drafted ids are untrusted: only act on this PR's threads that this account started. */
@@ -68,7 +126,10 @@ function vetThread(lookup: ThreadLookup, a: PrReviewThreadAction): string | null
   if (thread.firstCommentId !== a.commentId) {
     return "Refused: commentId is not the first comment of the thread";
   }
-  if (thread.firstCommentAuthor?.toLowerCase() !== lookup.viewerLogin.toLowerCase()) {
+  if (
+    thread.firstCommentAuthor === null ||
+    normalizeLogin(thread.firstCommentAuthor) !== normalizeLogin(lookup.viewerLogin)
+  ) {
     return "Refused: thread was not written by the authenticated account";
   }
   return null;
@@ -82,6 +143,7 @@ export async function runThreadActions(
   ri: RepoIdentifier,
   prNumber: number,
   actions: PrReviewThreadAction[],
+  opts: { unattended?: boolean } = {},
 ): Promise<PrReviewThreadActionResult[]> {
   const results: PrReviewThreadActionResult[] = [];
   let lookup: Promise<ThreadLookup> | null = null;
@@ -94,6 +156,14 @@ export async function runThreadActions(
     }
     const needsReply = a.action !== "resolve";
     const needsResolve = a.action !== "reply";
+    if (opts.unattended && needsResolve) {
+      results.push({
+        ...base,
+        status: "skipped",
+        error: "Left pending: only a person submitting the review resolves threads",
+      });
+      continue;
+    }
     if (
       (needsReply && !platform.replyToReviewThread) ||
       (needsResolve && !platform.resolveReviewThread)

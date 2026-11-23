@@ -1085,7 +1085,7 @@ async function applySubmitReview(snapshot: WorldSnapshot): Promise<ExecuteOutcom
   const prReviewId = snapshot.run.ref.id;
   const { submitReview } = await import("./pr-review-service.js");
   try {
-    await submitReview(prReviewId);
+    await submitReview(prReviewId, undefined, { unattended: true });
     return { status: "applied", reason: "auto_submitted" };
   } catch (err) {
     const cooldown = await handleGithubWriteBlock(snapshot, err);

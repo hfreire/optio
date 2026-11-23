@@ -12,6 +12,10 @@ import { getControllerWork } from "./controller-service.js";
 import { db } from "../db/client.js";
 import { repos, prReviewChatMessages } from "../db/schema.js";
 import * as reviews from "./pr-review-service.js";
+import {
+  ThreadActionsNotAppliedError,
+  ThreadActionValidationError,
+} from "./pr-review-thread-actions.js";
 
 async function reviewTarget(p: ControllerPrincipal, id: string, write = false) {
   const work = await getControllerWork(p, id);
@@ -59,7 +63,12 @@ export async function updateControllerReview(
   const row = await reviewTarget(p, id, true);
   if (!["ready", "stale"].includes(row.state))
     throw new ControllerError(409, `Cannot edit review in ${row.state} state`);
-  await reviews.updatePrReviewDraft(id, updates);
+  try {
+    await reviews.updatePrReviewDraft(id, updates);
+  } catch (err) {
+    if (err instanceof ThreadActionValidationError) throw new ControllerError(400, err.message);
+    throw err;
+  }
   return { id, updated: true, href: `/reviews/${id}` };
 }
 export async function controlControllerReview(
@@ -71,7 +80,13 @@ export async function controlControllerReview(
   if (action === "submit") {
     if (!["ready", "stale"].includes(row.state))
       throw new ControllerError(409, `Cannot submit review in ${row.state} state`);
-    const result = await reviews.submitReview(id, p.actor.userId ?? undefined);
+    const result = await reviews
+      .submitReview(id, p.actor.userId ?? undefined)
+      .catch((err: unknown) => {
+        if (err instanceof ThreadActionsNotAppliedError)
+          throw new ControllerError(409, err.message);
+        throw err;
+      });
     return {
       id,
       state: result.review.state,

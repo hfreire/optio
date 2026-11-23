@@ -13,6 +13,11 @@ import { normalizeRepoUrl, parsePrUrl } from "@optio/shared";
 import { requireRole } from "../plugins/auth.js";
 import { getRepoByUrl } from "../services/repo-service.js";
 import { listLogs } from "../services/run-log-service.js";
+import {
+  MAX_THREAD_ACTIONS,
+  ThreadActionsNotAppliedError,
+  threadActionShape,
+} from "../services/pr-review-thread-actions.js";
 import * as prReviewService from "../services/pr-review-service.js";
 import { logger } from "../logger.js";
 import { logAction } from "../services/optio-action-service.js";
@@ -31,15 +36,20 @@ const createReviewSchema = z
   })
   .describe("Body for launching a PR review");
 
-const ThreadActionSchema = z
-  .object({
-    threadId: z.string().min(1).describe("GitHub review-thread node id or GitLab discussion id"),
-    commentId: z.number().int().positive().describe("REST id of the thread's first comment"),
-    action: z.enum(["resolve", "reply", "reply_resolve"]),
-    body: z.string().max(20000).optional().describe("Required for reply and reply_resolve"),
-    enabled: z.boolean().optional().describe("Off skips the action on submit (default on)"),
-  })
-  .describe("An action on an existing review thread");
+const ThreadActionSchema = threadActionShape.describe("An action on an existing review thread");
+
+const SubmitErrorSchema = ErrorResponseSchema.extend({
+  threadActionResults: z
+    .array(
+      z.object({
+        threadId: z.string(),
+        action: z.string(),
+        status: z.enum(["done", "failed", "skipped"]),
+        error: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
 
 const updateReviewSchema = z
   .object({
@@ -64,7 +74,7 @@ const updateReviewSchema = z
       .optional(),
     threadActions: z
       .array(ThreadActionSchema)
-      .max(100)
+      .max(MAX_THREAD_ACTIONS)
       .optional()
       .describe("Replies and resolves on existing review threads, run on submit"),
   })
@@ -367,7 +377,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         params: IdParamsSchema,
         response: {
           200: GenericResultSchema,
-          400: ErrorResponseSchema,
+          400: SubmitErrorSchema,
           404: ErrorResponseSchema,
         },
       },
@@ -379,7 +389,12 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         reply.send(result);
       } catch (err: unknown) {
         logger.warn({ err, prReviewId: req.params.id }, "Failed to submit PR review");
-        reply.status(400).send({ error: err instanceof Error ? err.message : String(err) });
+        reply.status(400).send({
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof ThreadActionsNotAppliedError
+            ? { threadActionResults: err.results }
+            : {}),
+        });
       }
     },
   );

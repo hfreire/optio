@@ -1652,6 +1652,7 @@ export const prReviews = pgTable(
       jsonb("file_comments").$type<
         Array<{ path: string; line?: number; side?: string; body: string }>
       >(),
+    submitClaimedAt: timestamp("submit_claimed_at", { withTimezone: true }),
     threadActions: jsonb("thread_actions")
       .$type<PrReviewThreadAction[]>()
       .notNull()

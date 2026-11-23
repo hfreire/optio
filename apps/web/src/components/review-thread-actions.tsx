@@ -1,6 +1,10 @@
 "use client";
 
-import type { PrReviewThreadAction, PrReviewThreadActionKind } from "@optio/shared";
+import type {
+  PrReviewThreadAction,
+  PrReviewThreadActionKind,
+  PrReviewThreadActionResult,
+} from "@optio/shared";
 import { inputClass } from "@/components/ui/input";
 
 const LABELS: Record<PrReviewThreadActionKind, string> = {
@@ -81,4 +85,28 @@ export function ReviewThreadActions({
       </div>
     </div>
   );
+}
+
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** Actions the person switched off are not worth a warning; refused or deferred ones are. */
+export function submitToast(results: PrReviewThreadActionResult[] | undefined): {
+  kind: "success" | "warning" | "error";
+  message: string;
+} {
+  const failed = (results ?? []).filter((r) => r.status === "failed");
+  const skipped = (results ?? []).filter((r) => r.status === "skipped" && r.error !== "disabled");
+  if (failed.length > 0) {
+    return {
+      kind: "error",
+      message: `Review submitted, ${plural(failed.length, "thread action")} failed: ${failed.map((r) => r.error).join("; ")}`,
+    };
+  }
+  if (skipped.length > 0) {
+    return {
+      kind: "warning",
+      message: `Review submitted, ${plural(skipped.length, "thread action")} skipped: ${skipped.map((r) => r.error).join("; ")}`,
+    };
+  }
+  return { kind: "success", message: "Review submitted" };
 }

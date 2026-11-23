@@ -41,8 +41,10 @@ vi.mock("./git-token-service.js", async (importOriginal) => ({
   })),
 }));
 
-const { parseReviewOutput, submitReview, updatePrReviewDraft } =
+const { parseReviewOutput, submitReview, updatePrReviewDraft, appendChatReplyFromRun } =
   await import("./pr-review-service.js");
+const { ThreadActionsNotAppliedError } = await import("./pr-review-thread-actions.js");
+const runLogService = await import("./run-log-service.js");
 
 let n = 100;
 async function insertReview(over: Partial<typeof prReviews.$inferInsert> = {}) {
@@ -140,6 +142,15 @@ describe("updatePrReviewDraft", () => {
     });
     expect(updated.threadActions).toEqual([{ ...resolveA, enabled: false }]);
     expect(updated.userEngaged).toBe(true);
+  });
+
+  it("rejects with a readable message", async () => {
+    const review = await insertReview();
+    await expect(
+      updatePrReviewDraft(review.id, {
+        threadActions: [{ threadId: "A", commentId: 1, action: "reply" }],
+      }),
+    ).rejects.toThrow("threadActions[0].body: body is required for reply");
   });
 
   it("rejects duplicate thread ids", async () => {
@@ -259,5 +270,117 @@ describe("submitReview and engagement", () => {
     const review = await insertReview({ summary: "s", origin: "manual", userEngaged: true });
     const { review: submitted } = await submitReview(review.id);
     expect(submitted.userEngaged).toBe(true);
+  });
+});
+
+describe("submitReview when nothing is posted", () => {
+  it("keeps the review retryable and reports every action when all are refused", async () => {
+    const review = await insertReview({
+      summary: "",
+      threadActions: [{ threadId: "OTHER_PR", commentId: 1, action: "resolve" }],
+    });
+    const err = await submitReview(review.id).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ThreadActionsNotAppliedError);
+    expect((err as InstanceType<typeof ThreadActionsNotAppliedError>).results).toMatchObject([
+      { threadId: "OTHER_PR", status: "failed" },
+    ]);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(row.state).toBe("ready");
+    expect(row.submittedAt).toBeNull();
+    calls.length = 0;
+    await db
+      .update(prReviews)
+      .set({ threadActions: [resolveA] })
+      .where(eq(prReviews.id, review.id));
+    await expect(submitReview(review.id)).resolves.toMatchObject({
+      review: { state: "submitted" },
+    });
+    expect(calls).toEqual(["resolve:A"]);
+  });
+});
+
+describe("submitReview unattended", () => {
+  it("replies but leaves resolves pending and says so", async () => {
+    const replyOnly: PrReviewThreadAction = {
+      threadId: "C",
+      commentId: 3,
+      action: "reply",
+      body: "Why?",
+    };
+    const review = await insertReview({
+      summary: "s",
+      threadActions: [resolveA, replyResolveB, replyOnly],
+    });
+    const result = await submitReview(review.id, undefined, { unattended: true });
+    expect(calls).toEqual(["review", "reply:C"]);
+    expect(result.threadActionResults.map((r) => r.status)).toEqual(["skipped", "skipped", "done"]);
+    expect(result.threadActionResults[0].error).toContain("pending");
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(row.threadActions).toHaveLength(3);
+  });
+});
+
+describe("submitReview body", () => {
+  it.each(["", "   "])("never posts an empty body for an approve (%j)", async (summary) => {
+    const review = await insertReview({ summary, verdict: "approve" });
+    await submitReview(review.id);
+    expect(platform.submitReview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ event: "APPROVE", body: expect.stringMatching(/\S/) }),
+    );
+  });
+});
+
+describe("overlapping submits", () => {
+  it("runs the actions once", async () => {
+    const review = await insertReview({ summary: "s", threadActions: [resolveA] });
+    const results = await Promise.allSettled([submitReview(review.id), submitReview(review.id)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(calls.filter((c) => c === "review")).toHaveLength(1);
+    expect(calls.filter((c) => c === "resolve:A")).toHaveLength(1);
+  });
+
+  it("releases the claim when posting fails so the person can retry", async () => {
+    vi.mocked(platform.submitReview).mockRejectedValueOnce(new Error("boom"));
+    const review = await insertReview({ summary: "s" });
+    await expect(submitReview(review.id)).rejects.toThrow("boom");
+    await expect(submitReview(review.id)).resolves.toMatchObject({
+      review: { state: "submitted" },
+    });
+  });
+});
+
+describe("appendChatReplyFromRun", () => {
+  async function chat(content: string, threadActions: PrReviewThreadAction[]) {
+    const review = await insertReview({ state: "ready", threadActions });
+    const [run] = await db
+      .insert(prReviewRuns)
+      .values({ prReviewId: review.id, resultSummary: "ok" })
+      .returning();
+    await runLogService.insertLog({ prReviewRunId: run.id }, { content });
+    await appendChatReplyFromRun(run.id);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    return row;
+  }
+  const draft = (threadActions: unknown) =>
+    "```json\n" + JSON.stringify({ verdict: "comment", summary: "s", threadActions }) + "\n```";
+
+  it("keeps the valid entries when one is invalid", async () => {
+    const row = await chat(
+      draft([
+        { threadId: "A", commentId: 1, action: "resolve" },
+        { threadId: "B", commentId: "x", action: "resolve" },
+      ]),
+      [replyResolveB],
+    );
+    expect(row.threadActions).toEqual([{ ...resolveA, enabled: true }]);
+  });
+
+  it("keeps the stored actions when nothing valid comes back", async () => {
+    const row = await chat(draft([{ threadId: "", commentId: 1, action: "resolve" }]), [
+      replyResolveB,
+    ]);
+    expect(row.threadActions).toEqual([replyResolveB]);
   });
 });

@@ -38,7 +38,7 @@ import {
   prReviewEvents,
   prReviewChatMessages,
 } from "../db/schema.js";
-import { eq, and, sql, asc, desc, inArray } from "drizzle-orm";
+import { eq, and, sql, asc, desc, inArray, isNull, lt, or } from "drizzle-orm";
 import { getGitPlatformForRepo } from "./git-token-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
 import * as runLogService from "./run-log-service.js";
@@ -46,12 +46,12 @@ import { publishEvent } from "./event-bus.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
 import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { logger } from "../logger.js";
-import { z } from "zod";
 import {
   hasEnabledThreadActions,
   parseThreadActions,
   runThreadActions,
-  threadActionSchema,
+  threadActionsSchema,
+  ThreadActionsNotAppliedError,
 } from "./pr-review-thread-actions.js";
 
 export type PrReview = typeof prReviews.$inferSelect;
@@ -734,13 +734,7 @@ export async function updatePrReviewDraft(
   if (updates.verdict !== undefined) patch.verdict = updates.verdict;
   if (updates.fileComments !== undefined) patch.fileComments = updates.fileComments;
   if (updates.threadActions !== undefined) {
-    patch.threadActions = z
-      .array(threadActionSchema)
-      .max(100)
-      .refine((list) => new Set(list.map((t) => t.threadId)).size === list.length, {
-        message: "Duplicate threadId",
-      })
-      .parse(updates.threadActions);
+    patch.threadActions = threadActionsSchema.parse(updates.threadActions);
   }
   const [updated] = await db.update(prReviews).set(patch).where(eq(prReviews.id, id)).returning();
   return updated;
@@ -799,7 +793,7 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
     repoConfig?.externalReviewMode === "on_pr_post"
   ) {
     try {
-      await submitReview(review.id);
+      await submitReview(review.id, undefined, { unattended: true });
       await db
         .update(prReviews)
         .set({ autoSubmitted: true, updatedAt: new Date() })
@@ -835,9 +829,34 @@ function extractVerdictJson(
 
 // ── Submit review ──────────────────────────────────────────────────────────
 
+const SUBMIT_CLAIM_TTL_MS = 10 * 60 * 1000;
+
+/** Atomically take the right to submit; a crashed submit's claim expires. */
+async function claimSubmit(id: string): Promise<boolean> {
+  const rows = await db
+    .update(prReviews)
+    .set({ submitClaimedAt: new Date() })
+    .where(
+      and(
+        eq(prReviews.id, id),
+        inArray(prReviews.state, [PrReviewState.READY, PrReviewState.STALE]),
+        or(
+          isNull(prReviews.submitClaimedAt),
+          lt(prReviews.submitClaimedAt, new Date(Date.now() - SUBMIT_CLAIM_TTL_MS)),
+        ),
+      ),
+    )
+    .returning({ id: prReviews.id });
+  return rows.length > 0;
+}
+
+const releaseSubmit = (id: string) =>
+  db.update(prReviews).set({ submitClaimedAt: null }).where(eq(prReviews.id, id));
+
 export async function submitReview(
   id: string,
   userId?: string,
+  opts: { unattended?: boolean } = {},
 ): Promise<{
   review: PrReview;
   reviewUrl?: string;
@@ -849,9 +868,27 @@ export async function submitReview(
   if (!submittable.includes(review.state as PrReviewState)) {
     throw new Error(`Cannot submit review in ${review.state} state`);
   }
+  if (!(await claimSubmit(id))) throw new Error("Review is already being submitted");
 
-  const repoUrl = review.repoUrl;
-  const { platform, ri } = await getGitPlatformForRepo(repoUrl, {
+  try {
+    return await postReview(review, userId, opts);
+  } catch (err) {
+    await releaseSubmit(id);
+    throw err;
+  }
+}
+
+async function postReview(
+  review: PrReview,
+  userId: string | undefined,
+  opts: { unattended?: boolean },
+): Promise<{
+  review: PrReview;
+  reviewUrl?: string;
+  threadActionResults: PrReviewThreadActionResult[];
+}> {
+  const id = review.id;
+  const { platform, ri } = await getGitPlatformForRepo(review.repoUrl, {
     userId,
     server: !userId,
   });
@@ -873,9 +910,10 @@ export async function submitReview(
     }));
 
   const threadActions = review.threadActions ?? [];
+  const summary = review.summary?.trim() ?? "";
   const threadsOnly =
     hasEnabledThreadActions(threadActions) &&
-    !review.summary?.trim() &&
+    !summary &&
     comments.length === 0 &&
     (review.verdict === "comment" || !review.verdict);
 
@@ -883,17 +921,23 @@ export async function submitReview(
   if (!threadsOnly) {
     const result = await platform.submitReview(ri, review.prNumber, {
       event,
-      body: review.summary ?? "Review by Optio",
+      body: summary || "Review by Optio",
       commitId: review.headSha,
       comments: comments.length > 0 ? comments : undefined,
     });
     reviewUrl = result.url;
   }
 
-  const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions);
+  const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
+    unattended: opts.unattended,
+  });
   const failed = threadActionResults.filter((r) => r.status === "failed");
   if (failed.length > 0) {
     logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
+  }
+
+  if (threadsOnly && !threadActionResults.some((r) => r.status === "done")) {
+    throw new ThreadActionsNotAppliedError(threadActionResults);
   }
 
   // Submitting settles the draft the person engaged with, so a later push can
@@ -902,6 +946,7 @@ export async function submitReview(
     .update(prReviews)
     .set({
       submittedAt: new Date(),
+      submitClaimedAt: null,
       updatedAt: new Date(),
       ...(review.origin === "auto" ? { userEngaged: false } : {}),
     })
@@ -1175,9 +1220,8 @@ export async function appendChatReplyFromRun(runId: string): Promise<void> {
     }
     if (typeof parsed.summary === "string") updates.summary = parsed.summary;
     if (Array.isArray(parsed.fileComments)) updates.fileComments = parsed.fileComments;
-    if (Array.isArray(parsed.threadActions)) {
-      updates.threadActions = parseThreadActions(parsed.threadActions);
-    }
+    const threadActions = parseThreadActions(parsed.threadActions);
+    if (threadActions.length > 0) updates.threadActions = threadActions;
     if (Object.keys(updates).length > 1) {
       await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
     }

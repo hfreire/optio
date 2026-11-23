@@ -5,6 +5,8 @@ import {
   runThreadActions,
   hasEnabledThreadActions,
   threadActionSchema,
+  threadActionsSchema,
+  ThreadActionValidationError,
 } from "./pr-review-thread-actions.js";
 
 const warn = vi.fn();
@@ -83,6 +85,48 @@ describe("parseThreadActions", () => {
       log,
     );
     expect(a.body).toBeUndefined();
+  });
+});
+
+describe("limits", () => {
+  it("drops an agent action whose body is over the cap, with a warning", () => {
+    warn.mockClear();
+    const out = parseThreadActions(
+      [
+        { threadId: "big", commentId: 1, action: "reply", body: "x".repeat(20001) },
+        { threadId: "ok", commentId: 2, action: "reply", body: "x".repeat(20000) },
+      ],
+      log,
+    );
+    expect(out.map((a) => a.threadId)).toEqual(["ok"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps at most 100 agent actions", () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      threadId: `t${i}`,
+      commentId: i + 1,
+      action: "resolve",
+    }));
+    expect(parseThreadActions(many, log)).toHaveLength(100);
+  });
+});
+
+describe("threadActionsSchema", () => {
+  it("rejects duplicates and oversize lists with a readable message", () => {
+    const a = { threadId: "t", commentId: 1, action: "resolve" as const };
+    expect(() => threadActionsSchema.parse([a, a])).toThrow(ThreadActionValidationError);
+    expect(() => threadActionsSchema.parse([a, a])).toThrow("Duplicate threadId");
+  });
+
+  it("names the field in the message, not raw issue JSON", () => {
+    try {
+      threadActionsSchema.parse([{ threadId: "t", commentId: 1, action: "reply" }]);
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ThreadActionValidationError);
+      expect((err as Error).message).toBe("threadActions[0].body: body is required for reply");
+    }
   });
 });
 
@@ -256,6 +300,53 @@ describe("runThreadActions", () => {
       { threadId: "a", commentId: 1, action: "resolve", enabled: false },
     ]);
     expect(second.p.listReviewThreads).not.toHaveBeenCalled();
+  });
+
+  it("matches [bot] logins on either side, case-insensitively", async () => {
+    for (const [viewer, author] of [
+      ["optio[bot]", "Optio"],
+      ["Optio", "optio[bot]"],
+      ["optio[bot]", "optio[bot]"],
+    ]) {
+      const { p, calls } = platform({
+        listReviewThreads: vi.fn(async () => ({
+          viewerLogin: viewer,
+          threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: author }],
+        })),
+      });
+      await runThreadActions(p, ri, 5, [{ threadId: "a", commentId: 1, action: "resolve" }]);
+      expect(calls).toEqual(["resolve:a"]);
+    }
+  });
+
+  it("does not match different accounts that share a prefix", async () => {
+    const { p, calls } = platform({
+      listReviewThreads: vi.fn(async () => ({
+        viewerLogin: "optio[bot]",
+        threads: [{ threadId: "a", firstCommentId: 1, firstCommentAuthor: "optio-other" }],
+      })),
+    });
+    await runThreadActions(p, ri, 5, [{ threadId: "a", commentId: 1, action: "resolve" }]);
+    expect(calls).toEqual([]);
+  });
+
+  it("unattended: never resolves, leaves resolve and reply_resolve pending, still replies", async () => {
+    const { p, calls } = platform();
+    const results = await runThreadActions(
+      p,
+      ri,
+      5,
+      [
+        { threadId: "a", commentId: 1, action: "resolve" },
+        { threadId: "b", commentId: 2, action: "reply_resolve", body: "Fixed" },
+        { threadId: "c", commentId: 3, action: "reply", body: "Why?" },
+      ],
+      { unattended: true },
+    );
+    expect(calls).toEqual(["reply:c:Why?"]);
+    expect(results.map((r) => r.status)).toEqual(["skipped", "skipped", "done"]);
+    expect(results[0].error).toContain("pending");
+    expect(results[1].error).toContain("pending");
   });
 
   it("skips and reports on a platform without thread support", async () => {

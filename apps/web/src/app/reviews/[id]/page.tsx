@@ -8,7 +8,7 @@ import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
 import { classifyError, type PrReviewThreadAction } from "@optio/shared";
-import { ReviewThreadActions } from "@/components/review-thread-actions";
+import { ReviewThreadActions, submitToast } from "@/components/review-thread-actions";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LogViewer } from "@/components/log-viewer";
 import { AgentAvatar } from "@/components/agent-avatar";
@@ -229,16 +229,8 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
     try {
       const res = await api.submitPrReview(id);
       setReview(res.review);
-      const failed = res.threadActionResults?.filter((r) => r.status === "failed") ?? [];
-      if (failed.length > 0) {
-        toast.error(
-          `Review submitted, ${failed.length} thread action${failed.length === 1 ? "" : "s"} failed: ${failed
-            .map((r) => r.error)
-            .join("; ")}`,
-        );
-      } else {
-        toast.success("Review submitted");
-      }
+      const t = submitToast(res.threadActionResults);
+      toast[t.kind](t.message);
     } catch (err: any) {
       toast.error(err.message || "Failed to submit");
     }

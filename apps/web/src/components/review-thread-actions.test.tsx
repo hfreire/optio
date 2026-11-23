@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { ReviewThreadActions, threadHref } from "./review-thread-actions";
+import { ReviewThreadActions, submitToast, threadHref } from "./review-thread-actions";
 
 afterEach(cleanup);
 
@@ -58,4 +58,26 @@ it("builds GitLab note anchors", () => {
   expect(threadHref("https://gitlab.com/g/p/-/merge_requests/3", 9)).toBe(
     "https://gitlab.com/g/p/-/merge_requests/3#note_9",
   );
+});
+
+it("toasts success, a warning for skipped actions and an error for failed ones", () => {
+  expect(submitToast(undefined)).toEqual({ kind: "success", message: "Review submitted" });
+  expect(
+    submitToast([{ threadId: "a", action: "resolve", status: "skipped", error: "disabled" }]),
+  ).toEqual({ kind: "success", message: "Review submitted" });
+  const warn = submitToast([
+    { threadId: "a", action: "resolve", status: "done" },
+    {
+      threadId: "b",
+      action: "resolve",
+      status: "skipped",
+      error: "Left pending: a person resolves",
+    },
+  ]);
+  expect(warn.kind).toBe("warning");
+  expect(warn.message).toContain("1 thread action skipped");
+  expect(warn.message).toContain("Left pending");
+  expect(
+    submitToast([{ threadId: "a", action: "reply", status: "failed", error: "403" }]).kind,
+  ).toBe("error");
 });
