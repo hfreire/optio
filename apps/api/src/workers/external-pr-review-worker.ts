@@ -19,13 +19,21 @@ import { Queue, Worker } from "bullmq";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { repos, prReviews } from "../db/schema.js";
-import { parseIntEnv, parseRepoUrl, PrReviewState } from "@optio/shared";
+import {
+  parseIntEnv,
+  parseRepoUrl,
+  PrReviewState,
+  type GitPlatform,
+  type PullRequest,
+  type RepoIdentifier,
+} from "@optio/shared";
 import { getGitPlatformForRepo } from "../services/git-token-service.js";
 import {
   launchPrReview,
   isOptioAuthoredPr,
   preferredReview,
 } from "../services/pr-review-service.js";
+import { threadsAwaitingFollowUp } from "../services/pr-review-thread-actions.js";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
@@ -91,6 +99,29 @@ export function startExternalPrReviewWorker() {
   });
 
   return worker;
+}
+
+/** A submitted auto review whose threads got a reply since, with no new push. */
+async function awaitsThreadFollowUp(
+  review: typeof prReviews.$inferSelect,
+  pr: PullRequest,
+  platform: GitPlatform,
+  ri: RepoIdentifier,
+): Promise<boolean> {
+  if (
+    review.origin !== "auto" ||
+    review.state !== PrReviewState.SUBMITTED ||
+    pr.headSha !== review.headSha ||
+    !review.postedReviewIds.length ||
+    !platform.listReviewThreads ||
+    (pr.updatedAt && Date.parse(pr.updatedAt) <= review.updatedAt.getTime())
+  ) {
+    return false;
+  }
+  const lookup = await platform.listReviewThreads(ri, pr.number);
+  return (
+    threadsAwaitingFollowUp(lookup, review.postedReviewIds, review.threadWatermarks).length > 0
+  );
 }
 
 /** One sweep over every repo that reviews external PRs. */
@@ -185,6 +216,15 @@ export async function sweepExternalPrs(): Promise<void> {
               continue;
             }
 
+            if (await awaitsThreadFollowUp(existing, pr, platform, ri)) {
+              await launchPrReview({
+                prUrl: pr.url,
+                workspaceId: repo.workspaceId ?? undefined,
+                origin: "auto",
+                seenVersion: existing.updatedAt,
+                runKind: "threads-only",
+              });
+            }
             continue;
           }
 

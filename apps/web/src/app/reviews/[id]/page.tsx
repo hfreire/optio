@@ -7,8 +7,14 @@ import { api } from "@/lib/api-client";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
-import { classifyError, hasPendingThreadActions, type PrReviewThreadAction } from "@optio/shared";
 import {
+  classifyError,
+  hasPendingThreadActions,
+  type PrReviewHeldThread,
+  type PrReviewThreadAction,
+} from "@optio/shared";
+import {
+  HeldThreads,
   ReviewThreadActions,
   saveBeforeSubmit,
   submitToast,
@@ -60,6 +66,7 @@ interface Review {
   summary: string | null;
   fileComments: Array<{ path: string; line?: number; side?: string; body: string }> | null;
   threadActions?: PrReviewThreadAction[];
+  heldThreads?: PrReviewHeldThread[];
   origin: string;
   userEngaged: boolean;
   autoSubmitted: boolean;
@@ -526,6 +533,11 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
           {/* Verdict + summary widget — collapsible. When collapsed, the
               header strip stays visible so the user can see the verdict at a
               glance without expanding. */}
+          {!!review.heldThreads?.length && (
+            <div className="shrink-0 border-b border-border bg-bg-card px-4 py-2">
+              <HeldThreads threads={review.heldThreads} prUrl={review.prUrl} />
+            </div>
+          )}
           {hasDraft && (
             <div className="shrink-0 border-b border-border bg-bg-card">
               <button

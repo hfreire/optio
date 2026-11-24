@@ -1,9 +1,14 @@
 import { eq, and } from "drizzle-orm";
 import webPush from "web-push";
 import { db } from "../db/client.js";
-import { pushSubscriptions, notificationPreferences, tasks } from "../db/schema.js";
+import {
+  pushSubscriptions,
+  notificationPreferences,
+  tasks,
+  workspaceMembers,
+} from "../db/schema.js";
 import { logger } from "../logger.js";
-import type { TaskState } from "@optio/shared";
+import type { PrReviewHeldThread, TaskState } from "@optio/shared";
 
 // ── VAPID configuration ──────────────────────────────────────────────────────
 
@@ -47,7 +52,8 @@ export type NotificationEventType =
   | "local.needs_you"
   | "local.host_offline"
   | "agent.turn_completed"
-  | "agent.failed";
+  | "agent.failed"
+  | "review.needs_you";
 
 export const DEFAULT_PREFERENCES: Record<NotificationEventType, { push: boolean }> = {
   "task.pr_opened": { push: true },
@@ -61,6 +67,7 @@ export const DEFAULT_PREFERENCES: Record<NotificationEventType, { push: boolean 
   "local.host_offline": { push: true },
   "agent.turn_completed": { push: true },
   "agent.failed": { push: true },
+  "review.needs_you": { push: true },
 };
 
 /** Map task states to notification event types. */
@@ -99,6 +106,7 @@ function buildPayload(
     "local.host_offline": "Laptop unreachable",
     "agent.turn_completed": "Agent replied",
     "agent.failed": "Agent stopped",
+    "review.needs_you": "Review thread needs you",
   };
 
   return {
@@ -386,4 +394,35 @@ export async function sendPushNotificationForComment(
 
   const payload = buildPayload("task.commented", task);
   await sendPushToUser(task.createdBy, "task.commented", payload);
+}
+
+/** Tell the workspace's admins that a review left threads for a person to answer. */
+export async function notifyHeldThreads(
+  review: {
+    id: string;
+    workspaceId: string | null;
+    prUrl: string;
+    prNumber: number;
+    repoOwner: string;
+    repoName: string;
+  },
+  held: PrReviewHeldThread[],
+): Promise<void> {
+  if (!vapidConfigured || !review.workspaceId || held.length === 0) return;
+  const admins = await db
+    .select({ userId: workspaceMembers.userId })
+    .from(workspaceMembers)
+    .where(
+      and(eq(workspaceMembers.workspaceId, review.workspaceId), eq(workspaceMembers.role, "admin")),
+    );
+  const threads = held.length === 1 ? "1 thread" : `${held.length} threads`;
+  const payload: NotificationPayload = {
+    title: "Review thread needs you",
+    body: `${threads} on ${review.repoOwner}/${review.repoName}#${review.prNumber}`,
+    icon: "/icon.png",
+    badge: "/badge.png",
+    tag: `review-${review.id}`,
+    data: { url: `${PUBLIC_URL}/reviews/${review.id}`, eventType: "review.needs_you", taskId: "" },
+  };
+  await Promise.all(admins.map((a) => sendPushToUser(a.userId, "review.needs_you", payload)));
 }

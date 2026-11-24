@@ -21,6 +21,8 @@ import { sql } from "drizzle-orm";
 import type {
   PrReviewThreadAction,
   PrReviewThreadProgress,
+  PrReviewThreadWatermarks,
+  PrReviewHeldThread,
   RemoteWorkspaceLaunch,
   RemoteWorkspaceProviderId,
 } from "@optio/shared";
@@ -1664,6 +1666,14 @@ export const prReviews = pgTable(
       .default(sql`'{}'::jsonb`),
     postedReviewIds: jsonb("posted_review_ids")
       .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    threadWatermarks: jsonb("thread_watermarks")
+      .$type<PrReviewThreadWatermarks>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    heldThreads: jsonb("held_threads")
+      .$type<PrReviewHeldThread[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
     origin: text("origin").notNull().default("manual"), // "manual" | "auto"

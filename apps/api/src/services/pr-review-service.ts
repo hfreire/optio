@@ -29,6 +29,10 @@ import {
   type PrReviewFileComment,
   type PrReviewThreadAction,
   type PrReviewThreadActionResult,
+  type PrReviewThreadWatermarks,
+  type PrReviewHeldThread,
+  type GitPlatform,
+  type RepoIdentifier,
 } from "@optio/shared";
 import { db } from "../db/client.js";
 import {
@@ -57,6 +61,10 @@ import {
   withProgress,
   threadActionFingerprint,
   ThreadActionsNotAppliedError,
+  parseHeldThreads,
+  threadWatermarks,
+  mergeWatermarks,
+  hasEnabledThreadActions,
   type ThreadStep,
 } from "./pr-review-thread-actions.js";
 
@@ -352,6 +360,8 @@ interface LaunchPrReviewInput {
    * launch), the current review is relaunched whatever it was.
    */
   seenVersion?: Date | null;
+  /** A follow-up on review threads only, never a new review. */
+  runKind?: "initial" | "threads-only";
 }
 
 /** Of two reviews of one PR, the one `findReviewByUrl` returns: active first, then newest. */
@@ -532,7 +542,7 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
   }
 
   // Otherwise enqueue the initial run immediately.
-  const run = await enqueueReviewRun(review.id, "initial", {
+  const run = await enqueueReviewRun(review.id, input.runKind ?? "initial", {
     prompt: undefined,
     prContext,
     repoConfig,
@@ -549,6 +559,28 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
  * This is the single funnel for kicking off any kind of review run
  * (initial / rereview / chat).
  */
+/** Where Optio's threads stand as a run starts: what the run will have seen once it drafts. */
+async function snapshotThreadWatermarks(
+  review: PrReview,
+  userId?: string,
+): Promise<PrReviewThreadWatermarks | undefined> {
+  if (!review.postedReviewIds.length) return undefined;
+  try {
+    const { platform, ri } = await getGitPlatformForRepo(review.repoUrl, {
+      userId,
+      server: !userId,
+    });
+    if (!platform.listReviewThreads) return undefined;
+    return threadWatermarks(
+      await platform.listReviewThreads(ri, review.prNumber),
+      review.postedReviewIds,
+    );
+  } catch (err) {
+    logger.warn({ err, prReviewId: review.id }, "Could not read review threads at launch");
+    return undefined;
+  }
+}
+
 // Just the fields enqueueReviewRun reads from the repo config. Accepts
 // both RepoRecord (from getRepoByUrl) and raw DB row shapes.
 interface RepoConfigLike {
@@ -606,6 +638,7 @@ export async function enqueueReviewRun(
   let renderedPrompt: string;
   let taskFileContent: string;
   let headSha = review.headSha;
+  let threadMarks: PrReviewThreadWatermarks | undefined;
   if (kind === "chat") {
     renderedPrompt = opts.prompt ?? "";
     taskFileContent = "";
@@ -636,7 +669,9 @@ export async function enqueueReviewRun(
       GIT_PLATFORM_CODECOMMIT: isCodeCommit ? "true" : "",
       CODECOMMIT_REPO: isCodeCommit ? (parsedRepoUrl?.repo ?? "") : "",
       BASE_BRANCH: repoConfig.defaultBranch ?? "main",
+      THREADS_ONLY: kind === "threads-only" ? " --threads-only" : "",
     });
+    threadMarks = await snapshotThreadWatermarks(review, opts.createdBy);
     taskFileContent = reviewContextFileContent({
       prNumber: review.prNumber,
       prUrl: review.prUrl,
@@ -662,6 +697,7 @@ export async function enqueueReviewRun(
         taskFileContent,
         taskFilePath: REVIEW_TASK_FILE_PATH,
         claudeModel: repoConfig.reviewModel ?? "sonnet",
+        ...(threadMarks && { threadWatermarks: threadMarks }),
       },
     })
     .returning();
@@ -787,10 +823,22 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
     updates.threadActions = threadActions;
     updates.threadActionProgress = {};
   }
+  const followUp = run.kind === "threads-only";
+  if (followUp) {
+    updates.verdict = "comment";
+    updates.summary = "";
+    updates.fileComments = [];
+  }
+  const held = parseHeldThreads(parsed?.heldThreads);
+  const wasHeld = new Set(review.heldThreads.map((t) => t.threadId));
+  const newlyHeld = (held ?? []).filter((t) => !wasHeld.has(t.threadId));
+  if (held) updates.heldThreads = held;
+  const seen = run.metadata?.threadWatermarks as PrReviewThreadWatermarks | undefined;
+  if (seen) updates.threadWatermarks = mergeWatermarks(review.threadWatermarks, seen);
 
   // Fall back to the run's result summary if we couldn't parse JSON, unless
   // the draft deliberately has no summary because it only acts on threads.
-  const threadsOnly = !!threadActions?.length && updates.summary === "";
+  const threadsOnly = followUp || (!!threadActions?.length && updates.summary === "");
   if (!updates.summary && !threadsOnly && run.resultSummary) {
     if (!/^Agent (completed successfully|exited with code \d+)$/.test(run.resultSummary)) {
       updates.summary = run.resultSummary;
@@ -799,6 +847,13 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
 
   await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
   await transitionPrReview(review.id, PrReviewState.READY, "agent_drafted", { runId });
+  if (newlyHeld.length) await notifyNewlyHeld(review.id, newlyHeld);
+
+  if (followUp && !hasEnabledThreadActions(threadActions ?? [])) {
+    // Nothing to post: the review already on the PR stands.
+    await transitionPrReview(review.id, PrReviewState.SUBMITTED, "follow_up_no_action", { runId });
+    return;
+  }
 
   logger.info(
     { runId, prReviewId: review.id, hasStructuredOutput: !!parsed },
@@ -828,9 +883,22 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
   }
 }
 
-function extractVerdictJson(
-  content: string,
-): { verdict?: string; summary?: unknown; fileComments?: unknown; threadActions?: unknown } | null {
+async function notifyNewlyHeld(id: string, held: PrReviewHeldThread[]): Promise<void> {
+  const [review] = await db.select().from(prReviews).where(eq(prReviews.id, id));
+  if (!review) return;
+  const { notifyHeldThreads } = await import("./notification-service.js");
+  await notifyHeldThreads(review, held).catch((err: unknown) =>
+    logger.warn({ err, prReviewId: id }, "Could not notify about held review threads"),
+  );
+}
+
+function extractVerdictJson(content: string): {
+  verdict?: string;
+  summary?: unknown;
+  fileComments?: unknown;
+  threadActions?: unknown;
+  heldThreads?: unknown;
+} | null {
   const patterns = [
     /```(?:json)?\s*\n?(\{[\s\S]*?"verdict"[\s\S]*?\})\s*\n?```/,
     /(\{[\s\S]*?"verdict"\s*:\s*"[^"]*"[\s\S]*\})\s*$/m,
@@ -934,6 +1002,35 @@ export async function submitReview(
   }
 }
 
+/** Past Optio's own replies, so they never wake a follow-up. */
+async function markActedThreads(
+  review: PrReview,
+  platform: GitPlatform,
+  ri: RepoIdentifier,
+  results: PrReviewThreadActionResult[],
+  postedReviewIds: number[],
+): Promise<void> {
+  const acted = new Set(results.filter((r) => r.status === "done").map((r) => r.threadId));
+  if (!acted.size || !platform.listReviewThreads) return;
+  try {
+    const now = threadWatermarks(
+      await platform.listReviewThreads(ri, review.prNumber),
+      postedReviewIds,
+    );
+    const marks = Object.fromEntries(Object.entries(now).filter(([t]) => acted.has(t)));
+    const [current] = await db
+      .select({ threadWatermarks: prReviews.threadWatermarks })
+      .from(prReviews)
+      .where(eq(prReviews.id, review.id));
+    await db
+      .update(prReviews)
+      .set({ threadWatermarks: mergeWatermarks(current?.threadWatermarks ?? {}, marks) })
+      .where(eq(prReviews.id, review.id));
+  } catch (err) {
+    logger.warn({ err, prReviewId: review.id }, "Could not record handled review threads");
+  }
+}
+
 async function postReview(
   review: PrReview,
   userId: string | undefined,
@@ -1010,6 +1107,7 @@ async function postReview(
   if (failed.length > 0) {
     logger.warn({ prReviewId: id, failed }, "Review thread actions failed");
   }
+  await markActedThreads(review, platform, ri, threadActionResults, postedReviewIds);
 
   if (threadsOnly && applied === 0 && !threadActionResults.some((r) => r.status === "done")) {
     throw new ThreadActionsNotAppliedError(threadActionResults, firstActionError);

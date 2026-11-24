@@ -242,6 +242,7 @@ describe("GitHubPlatform", () => {
                 nodes: [
                   {
                     id: "PRRT_1",
+                    isResolved: false,
                     comments: {
                       nodes: [
                         {
@@ -251,6 +252,7 @@ describe("GitHubPlatform", () => {
                         },
                       ],
                     },
+                    lastComment: { nodes: [{ databaseId: 15, author: { login: "alice" } }] },
                   },
                 ],
               },
@@ -265,7 +267,14 @@ describe("GitHubPlatform", () => {
             pullRequest: {
               reviewThreads: {
                 pageInfo: { hasNextPage: false, endCursor: null },
-                nodes: [{ id: "PRRT_2", comments: { nodes: [{ databaseId: 22, author: null }] } }],
+                nodes: [
+                  {
+                    id: "PRRT_2",
+                    isResolved: true,
+                    comments: { nodes: [{ databaseId: 22, author: null }] },
+                    lastComment: { nodes: [{ databaseId: 22, author: null }] },
+                  },
+                ],
               },
             },
           },
@@ -282,12 +291,18 @@ describe("GitHubPlatform", () => {
             firstCommentId: 11,
             firstCommentAuthor: "optio-bot",
             firstCommentReviewId: 900,
+            lastCommentId: 15,
+            lastCommentAuthor: "alice",
+            isResolved: false,
           },
           {
             threadId: "PRRT_2",
             firstCommentId: 22,
             firstCommentAuthor: null,
             firstCommentReviewId: null,
+            lastCommentId: 22,
+            lastCommentAuthor: null,
+            isResolved: true,
           },
         ],
       });

@@ -3,10 +3,12 @@ import { z } from "zod";
 import { hasPendingThreadActions as sharedHasPending, pendingThreadSteps } from "@optio/shared";
 import type {
   GitPlatform,
+  PrReviewHeldThread,
   PrReviewThreadAction,
   PrReviewThreadActionErrorKind,
   PrReviewThreadActionResult,
   PrReviewThreadProgress,
+  PrReviewThreadWatermarks,
   RepoIdentifier,
   ReviewThreadInfo,
 } from "@optio/shared";
@@ -192,6 +194,77 @@ export function awaitsPerson(d: DraftContent): boolean {
 const normalizeLogin = (login: string): string => login.replace(/\[bot\]$/i, "").toLowerCase();
 
 type ThreadLookup = { viewerLogin: string; threads: ReviewThreadInfo[] };
+
+const heldThreadSchema = z.object({
+  threadId: z.string().min(1).max(500),
+  commentId: z.number().int().positive(),
+  reason: z.enum(["reply_cap", "truncated", "unsure"]),
+});
+
+/** The draft's `heldThreads`, or null when it reports none (the field is absent). */
+export function parseHeldThreads(
+  raw: unknown,
+  log: WarnLogger = rootLogger,
+): PrReviewHeldThread[] | null {
+  if (!Array.isArray(raw)) return null;
+  const seen = new Set<string>();
+  const out: PrReviewHeldThread[] = [];
+  raw.forEach((entry, index) => {
+    if (out.length >= MAX_THREAD_ACTIONS) return;
+    const parsed = heldThreadSchema.safeParse(entry);
+    if (!parsed.success || seen.has(parsed.data.threadId)) {
+      log.warn({ index }, "Dropping invalid or duplicate held thread");
+      return;
+    }
+    seen.add(parsed.data.threadId);
+    out.push(parsed.data);
+  });
+  return out;
+}
+
+const startedByOptio = (t: ReviewThreadInfo, postedReviewIds: number[]): boolean =>
+  t.firstCommentReviewId != null && postedReviewIds.includes(t.firstCommentReviewId);
+
+/** Each thread Optio started, mapped to its last comment. */
+export function threadWatermarks(
+  lookup: ThreadLookup,
+  postedReviewIds: number[],
+): PrReviewThreadWatermarks {
+  const marks: PrReviewThreadWatermarks = {};
+  for (const t of lookup.threads) {
+    if (startedByOptio(t, postedReviewIds) && t.lastCommentId) marks[t.threadId] = t.lastCommentId;
+  }
+  return marks;
+}
+
+/** Unresolved threads Optio started whose last comment is someone else's and not yet handled. */
+export function threadsAwaitingFollowUp(
+  lookup: ThreadLookup,
+  postedReviewIds: number[],
+  watermarks: PrReviewThreadWatermarks,
+): ReviewThreadInfo[] {
+  const viewer = normalizeLogin(lookup.viewerLogin);
+  return lookup.threads.filter(
+    (t) =>
+      startedByOptio(t, postedReviewIds) &&
+      t.isResolved === false &&
+      t.lastCommentId !== undefined &&
+      t.lastCommentId !== t.firstCommentId &&
+      t.lastCommentId > (watermarks[t.threadId] ?? 0) &&
+      !!t.lastCommentAuthor &&
+      normalizeLogin(t.lastCommentAuthor) !== viewer,
+  );
+}
+
+/** Keep the higher mark per thread. */
+export function mergeWatermarks(
+  a: PrReviewThreadWatermarks,
+  b: PrReviewThreadWatermarks,
+): PrReviewThreadWatermarks {
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v);
+  return out;
+}
 
 type Vetting = { kind: "refused" | "author"; message: string };
 

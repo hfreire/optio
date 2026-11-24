@@ -397,7 +397,11 @@ export class GitHubPlatform implements GitPlatform {
         pullRequest(number: $number) {
           reviewThreads(first: 100, after: $after) {
             pageInfo { hasNextPage endCursor }
-            nodes { id comments(first: 1) { nodes { databaseId author { login } pullRequestReview { databaseId } } } }
+            nodes {
+              id isResolved
+              comments(first: 1) { nodes { databaseId author { login } pullRequestReview { databaseId } } }
+              lastComment: comments(last: 1) { nodes { databaseId author { login } } }
+            }
           }
         }
       }
@@ -412,6 +416,10 @@ export class GitHubPlatform implements GitPlatform {
               pageInfo: { hasNextPage: boolean; endCursor: string | null };
               nodes: Array<{
                 id: string;
+                isResolved?: boolean;
+                lastComment?: {
+                  nodes: Array<{ databaseId: number; author: { login: string } | null }>;
+                };
                 comments: {
                   nodes: Array<{
                     databaseId: number;
@@ -446,11 +454,17 @@ export class GitHubPlatform implements GitPlatform {
       for (const node of connection.nodes) {
         const first = node.comments.nodes[0];
         if (!first) continue;
+        const last = node.lastComment?.nodes[0];
         threads.push({
           threadId: node.id,
           firstCommentId: first.databaseId,
           firstCommentAuthor: first.author?.login ?? null,
           firstCommentReviewId: first.pullRequestReview?.databaseId ?? null,
+          ...(last && {
+            lastCommentId: last.databaseId,
+            lastCommentAuthor: last.author?.login ?? null,
+          }),
+          ...(node.isResolved !== undefined && { isResolved: node.isResolved }),
         });
       }
       if (!connection.pageInfo.hasNextPage) return { viewerLogin, threads };

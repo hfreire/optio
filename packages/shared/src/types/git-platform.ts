@@ -120,6 +120,9 @@ export interface ReviewThreadInfo {
   firstCommentAuthor: string | null;
   /** GitHub review the first comment belongs to, to recognise Optio's own inline comments. */
   firstCommentReviewId?: number | null;
+  lastCommentId?: number;
+  lastCommentAuthor?: string | null;
+  isResolved?: boolean;
 }
 
 export interface GitPlatform {

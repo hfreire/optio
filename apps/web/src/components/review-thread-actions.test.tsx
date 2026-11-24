@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
+  HeldThreads,
   ReviewThreadActions,
   saveBeforeSubmit,
   submitToast,
@@ -93,4 +94,24 @@ it("does not submit when saving the dirty draft fails", async () => {
   const save = vi.fn(async () => false);
   expect(await saveBeforeSubmit(false, save)).toBe(true);
   expect(save).not.toHaveBeenCalled();
+});
+
+it("lists held threads with their reason and a link to each", () => {
+  render(
+    <HeldThreads
+      prUrl="https://github.com/o/r/pull/1"
+      threads={[
+        { threadId: "A", commentId: 11, reason: "reply_cap" },
+        { threadId: "B", commentId: 22, reason: "unsure" },
+      ]}
+    />,
+  );
+  expect(screen.getByText("Needs you")).toBeInTheDocument();
+  const links = screen.getAllByRole("link");
+  expect(links.map((l) => l.getAttribute("href"))).toEqual([
+    "https://github.com/o/r/pull/1#discussion_r11",
+    "https://github.com/o/r/pull/1#discussion_r22",
+  ]);
+  expect(screen.getByText(/reply limit/i)).toBeInTheDocument();
+  expect(screen.getByText(/not sure/i)).toBeInTheDocument();
 });

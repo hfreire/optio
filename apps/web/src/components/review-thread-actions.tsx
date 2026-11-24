@@ -1,6 +1,8 @@
 "use client";
 
 import type {
+  PrReviewHeldThread,
+  PrReviewHeldThreadReason,
   PrReviewThreadAction,
   PrReviewThreadActionKind,
   PrReviewThreadActionResult,
@@ -19,6 +21,39 @@ export function threadHref(prUrl: string, commentId: number): string {
     ? `note_${commentId}`
     : `discussion_r${commentId}`;
   return `${prUrl.replace(/#.*$/, "")}#${anchor}`;
+}
+
+const HELD_REASONS: Record<PrReviewHeldThreadReason, string> = {
+  reply_cap: "Reached the reply limit",
+  truncated: "Thread too long to read in full",
+  unsure: "Optio is not sure how to answer",
+};
+
+/** Threads the review agent left for a person to answer. */
+export function HeldThreads({ threads, prUrl }: { threads: PrReviewHeldThread[]; prUrl: string }) {
+  return (
+    <div>
+      <div className="text-xs font-medium text-text-muted mb-2">Needs you</div>
+      <ul className="space-y-1">
+        {threads.map((t) => (
+          <li
+            key={t.threadId}
+            className="flex items-center justify-between gap-3 p-2 rounded-md bg-bg border border-border text-xs"
+          >
+            <span className="text-text-muted">{HELD_REASONS[t.reason]}</span>
+            <a
+              href={threadHref(prUrl, t.commentId)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary hover:text-primary-hover shrink-0"
+            >
+              Answer thread
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function ReviewThreadActions({

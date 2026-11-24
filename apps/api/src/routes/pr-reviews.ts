@@ -121,6 +121,15 @@ const PrReviewSchema = z
     summary: z.string().nullable(),
     fileComments: z.array(z.record(z.unknown())).nullable(),
     threadActions: z.array(ThreadActionResponseSchema).optional(),
+    heldThreads: z
+      .array(
+        z.object({
+          threadId: z.string(),
+          commentId: z.number(),
+          reason: z.enum(["reply_cap", "truncated", "unsure"]),
+        }),
+      )
+      .optional(),
     origin: z.string(),
     userEngaged: z.boolean(),
     autoSubmitted: z.boolean(),
