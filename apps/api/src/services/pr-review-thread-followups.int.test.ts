@@ -183,7 +183,7 @@ describe("parseReviewOutput with held threads", () => {
       JSON.stringify({ verdict: "comment", summary: "s", heldThreads: [added] }),
     );
     expect(notifyHeldThreads).not.toHaveBeenCalled();
-    expect((await row(review.id)).heldThreads).toEqual([added]);
+    expect((await row(review.id)).heldThreads).toEqual([...before, added]);
   });
 
   it("drops held threads the run never saw", async () => {
@@ -201,6 +201,26 @@ describe("parseReviewOutput with held threads", () => {
       }),
     );
     expect((await row(review.id)).heldThreads.map((t) => t.threadId)).toEqual(["A"]);
+  });
+
+  it("keeps a held thread held and drops the draft's action on it", async () => {
+    const before = [{ threadId: "A", commentId: 1, reason: "unsure" as const }];
+    const review = await insertReview({ heldThreads: before, origin: "manual" });
+    const run = await insertRun(review.id, "threads-only", { threadWatermarks: { A: 5, B: 6 } });
+    const added = { threadId: "B", commentId: 2, reason: "unsure" };
+    await parseReviewOutput(
+      run.id,
+      JSON.stringify({
+        verdict: "comment",
+        summary: "",
+        threadActions: [{ threadId: "A", commentId: 1, action: "reply", body: "Still no" }],
+        heldThreads: [added],
+      }),
+    );
+    const after = await row(review.id);
+    expect(after.heldThreads).toEqual([...before, added]);
+    expect(after.threadActions).toEqual([]);
+    expect(notifyHeldThreads).toHaveBeenCalledWith(expect.anything(), [added]);
   });
 
   it("keeps the held list when the draft does not report one", async () => {

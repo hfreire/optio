@@ -33,7 +33,10 @@ import {
   isOptioAuthoredPr,
   preferredReview,
 } from "../services/pr-review-service.js";
-import { threadsAwaitingFollowUp } from "../services/pr-review-thread-actions.js";
+import {
+  releaseHeldThreads,
+  threadsAwaitingFollowUp,
+} from "../services/pr-review-thread-actions.js";
 import { logger } from "../logger.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
@@ -131,8 +134,13 @@ async function awaitsThreadFollowUp(
   const lastFull = runs.findIndex((r) => r.kind !== "threads-only");
   if ((lastFull === -1 ? runs.length : lastFull) >= MAX_FOLLOW_UPS) return false;
   const lookup = await platform.listReviewThreads(ri, pr.number);
-  return (
-    threadsAwaitingFollowUp(lookup, review.postedReviewIds, review.threadWatermarks).length > 0
+  const held = releaseHeldThreads(review.heldThreads, lookup);
+  if (held.length !== review.heldThreads.length) {
+    await db.update(prReviews).set({ heldThreads: held }).where(eq(prReviews.id, review.id));
+  }
+  const heldIds = new Set(held.map((t) => t.threadId));
+  return threadsAwaitingFollowUp(lookup, review.postedReviewIds, review.threadWatermarks).some(
+    (t) => !heldIds.has(t.threadId),
   );
 }
 

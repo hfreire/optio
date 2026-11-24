@@ -237,6 +237,50 @@ export function threadWatermarks(
   return marks;
 }
 
+/** Holds stick across runs: a draft may add holds, never lift them. */
+export function mergeHeldThreads(
+  previous: PrReviewHeldThread[],
+  drafted: PrReviewHeldThread[] | null,
+): PrReviewHeldThread[] {
+  const ids = new Set(previous.map((t) => t.threadId));
+  return [...previous, ...(drafted ?? []).filter((t) => !ids.has(t.threadId))];
+}
+
+/** A held thread waits for a person, whatever a later draft wants to say on it. */
+export function dropActionsOnHeldThreads(
+  actions: PrReviewThreadAction[],
+  held: PrReviewHeldThread[],
+  log: WarnLogger = rootLogger,
+): PrReviewThreadAction[] {
+  const ids = new Set(held.map((t) => t.threadId));
+  return actions.filter((a) => {
+    if (!ids.has(a.threadId)) return true;
+    log.warn({ threadId: a.threadId }, "Dropping thread action on a held thread");
+    return false;
+  });
+}
+
+/**
+ * Holds still waiting for a person. Optio never posts on a held thread, so
+ * a resolved or vanished thread, or the viewer's own last comment, means a
+ * person took it.
+ */
+export function releaseHeldThreads(
+  held: PrReviewHeldThread[],
+  lookup: ThreadLookup,
+): PrReviewHeldThread[] {
+  const viewer = normalizeLogin(lookup.viewerLogin);
+  const byId = new Map(lookup.threads.map((t) => [t.threadId, t]));
+  return held.filter((h) => {
+    const t = byId.get(h.threadId);
+    return (
+      !!t &&
+      !t.isResolved &&
+      !(t.lastCommentAuthor && normalizeLogin(t.lastCommentAuthor) === viewer)
+    );
+  });
+}
+
 /** Unresolved threads Optio started whose last comment is someone else's and not yet handled. */
 export function threadsAwaitingFollowUp(
   lookup: ThreadLookup,

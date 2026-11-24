@@ -53,6 +53,8 @@ import { updatedAtMatches } from "../utils/pg-timestamp.js";
 import { logger } from "../logger.js";
 import {
   parseThreadActions,
+  dropActionsOnHeldThreads,
+  mergeHeldThreads,
   runThreadActions,
   validateThreadActions,
   awaitsPerson,
@@ -830,16 +832,18 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
     if (typeof parsed?.summary === "string") updates.summary = parsed.summary;
     if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
   }
-  const threadActions = parsed ? parseThreadActions(parsed.threadActions) : null;
+  const draftedActions = parsed ? parseThreadActions(parsed.threadActions) : null;
+  const threadActions =
+    draftedActions && dropActionsOnHeldThreads(draftedActions, review.heldThreads);
   if (threadActions) {
     updates.threadActions = threadActions;
     updates.threadActionProgress = {};
   }
   const seen = run.metadata?.threadWatermarks as PrReviewThreadWatermarks | undefined;
   const held = parseHeldThreads(parsed?.heldThreads)?.filter((t) => !seen || t.threadId in seen);
-  const wasHeld = new Set(review.heldThreads.map((t) => t.threadId));
-  const newlyHeld = (held ?? []).filter((t) => !wasHeld.has(t.threadId));
-  if (held) updates.heldThreads = held;
+  const heldNow = mergeHeldThreads(review.heldThreads, held ?? null);
+  const newlyHeld = heldNow.slice(review.heldThreads.length);
+  updates.heldThreads = heldNow;
   if (seen) updates.threadWatermarks = raiseWatermarks(seen);
 
   // Fall back to the run's result summary if we couldn't parse JSON, unless

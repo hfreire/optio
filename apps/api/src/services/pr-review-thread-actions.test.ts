@@ -21,6 +21,9 @@ import {
   parseHeldThreads,
   threadsAwaitingFollowUp,
   threadWatermarks,
+  mergeHeldThreads,
+  dropActionsOnHeldThreads,
+  releaseHeldThreads,
 } from "./pr-review-thread-actions.js";
 
 const warn = vi.fn();
@@ -772,5 +775,50 @@ describe("threadWatermarks", () => {
         [900],
       ),
     ).toEqual({ A: 4 });
+  });
+});
+
+describe("held threads stay held", () => {
+  const a = { threadId: "A", commentId: 1, reason: "unsure" as const };
+  const b = { threadId: "B", commentId: 2, reason: "reply_cap" as const };
+
+  it("keeps earlier holds when a later draft omits them, the earlier entry winning", () => {
+    expect(mergeHeldThreads([a], [b])).toEqual([a, b]);
+    expect(mergeHeldThreads([a], [{ ...a, reason: "truncated" }])).toEqual([a]);
+    expect(mergeHeldThreads([a], null)).toEqual([a]);
+    expect(mergeHeldThreads([], null)).toEqual([]);
+  });
+
+  it("drops drafted actions on a thread that was already held", () => {
+    warn.mockClear();
+    const actions: PrReviewThreadAction[] = [
+      { threadId: "A", commentId: 1, action: "reply", body: "No" },
+      { threadId: "B", commentId: 2, action: "reply", body: "Done" },
+    ];
+    expect(dropActionsOnHeldThreads(actions, [a], log).map((x) => x.threadId)).toEqual(["B"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  const thread = (over: Partial<ReviewThreadInfo>): ReviewThreadInfo => ({
+    threadId: "A",
+    firstCommentId: 1,
+    firstCommentAuthor: "optio-bot",
+    firstCommentReviewId: 900,
+    lastCommentId: 5,
+    lastCommentAuthor: "alice",
+    isResolved: false,
+    ...over,
+  });
+  const release = (threads: ReviewThreadInfo[]) =>
+    releaseHeldThreads([a], { viewerLogin: "optio-bot[bot]", threads }).map((t) => t.threadId);
+
+  it("keeps a hold while the author has the last word", () => {
+    expect(release([thread({})])).toEqual(["A"]);
+  });
+
+  it("releases a hold once a person engages", () => {
+    expect(release([thread({ isResolved: true })])).toEqual([]);
+    expect(release([thread({ lastCommentAuthor: "optio-bot" })])).toEqual([]);
+    expect(release([])).toEqual([]);
   });
 });
