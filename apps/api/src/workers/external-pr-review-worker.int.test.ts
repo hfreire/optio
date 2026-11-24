@@ -6,7 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitPlatform, PullRequest, ReviewThreadInfo } from "@optio/shared";
 import { db } from "../db/client.js";
-import { prReviews, repos } from "../db/schema.js";
+import { prReviewRuns, prReviews, repos } from "../db/schema.js";
 import { insertRepo } from "../test-utils/integration/fixtures.js";
 
 const launchPrReview = vi.fn(async () => ({ review: {}, run: {} }));
@@ -165,6 +165,38 @@ describe("thread follow-up trigger", () => {
     await sweepExternalPrs();
     expect(platform.listReviewThreads).not.toHaveBeenCalled();
     expect(launchPrReview).not.toHaveBeenCalled();
+  });
+
+  it("catches a reply posted while the last run was going", async () => {
+    const review = await submittedReview({ updatedAt: new Date() });
+    await db
+      .insert(prReviewRuns)
+      .values({ prReviewId: review.id, kind: "initial", createdAt: anHourAgo() });
+    prs = [openPr({ updatedAt: new Date(Date.now() - 1_800_000).toISOString() })];
+    await sweepExternalPrs();
+    expect(launchPrReview).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops after five follow-ups on one posted review", async () => {
+    const review = await submittedReview();
+    const at = (min: number) => new Date(Date.now() - 2 * 3_600_000 + min * 60_000);
+    await db.insert(prReviewRuns).values([
+      { prReviewId: review.id, kind: "initial", createdAt: at(0) },
+      ...[1, 2, 3, 4, 5].map((m) => ({
+        prReviewId: review.id,
+        kind: "threads-only",
+        createdAt: at(m),
+      })),
+    ]);
+    await sweepExternalPrs();
+    expect(launchPrReview).not.toHaveBeenCalled();
+    await db.delete(prReviewRuns);
+    await db.insert(prReviewRuns).values([
+      { prReviewId: review.id, kind: "threads-only", createdAt: at(1) },
+      { prReviewId: review.id, kind: "initial", createdAt: at(2) },
+    ]);
+    await sweepExternalPrs();
+    expect(launchPrReview).toHaveBeenCalledTimes(1);
   });
 
   it("a new push takes the normal re-review path", async () => {

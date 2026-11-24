@@ -46,7 +46,7 @@ vi.mock("./notification-service.js", async (importOriginal) => ({
 const queueAdd = vi.fn(async () => {});
 vi.mock("../workers/pr-review-worker.js", () => ({ prReviewRunQueue: { add: queueAdd } }));
 
-const { enqueueReviewRun, parseReviewOutput, submitReview } =
+const { enqueueReviewRun, failReviewForRun, parseReviewOutput, submitReview } =
   await import("./pr-review-service.js");
 
 let n = 500;
@@ -186,6 +186,23 @@ describe("parseReviewOutput with held threads", () => {
     expect((await row(review.id)).heldThreads).toEqual([added]);
   });
 
+  it("drops held threads the run never saw", async () => {
+    const review = await insertReview();
+    const run = await insertRun(review.id, "initial", { threadWatermarks: { A: 5 } });
+    await parseReviewOutput(
+      run.id,
+      JSON.stringify({
+        verdict: "comment",
+        summary: "s",
+        heldThreads: [
+          { threadId: "A", commentId: 1, reason: "unsure" },
+          { threadId: "Invented", commentId: 3, reason: "unsure" },
+        ],
+      }),
+    );
+    expect((await row(review.id)).heldThreads.map((t) => t.threadId)).toEqual(["A"]);
+  });
+
   it("keeps the held list when the draft does not report one", async () => {
     const before = [{ threadId: "A", commentId: 1, reason: "unsure" as const }];
     const review = await insertReview({ heldThreads: before });
@@ -196,8 +213,10 @@ describe("parseReviewOutput with held threads", () => {
 });
 
 describe("threads-only runs", () => {
+  const posted = { verdict: "approve", summary: "Looks good", fileComments: [] };
+
   it("record what they saw and settle back to submitted when there is nothing to post", async () => {
-    const review = await insertReview({ threadWatermarks: { A: 3, Z: 40 } });
+    const review = await insertReview({ ...posted, threadWatermarks: { A: 3, Z: 40 } });
     const run = await insertRun(review.id, "threads-only", { threadWatermarks: { A: 5, B: 6 } });
     await parseReviewOutput(
       run.id,
@@ -210,14 +229,13 @@ describe("threads-only runs", () => {
       }),
     );
     const after = await row(review.id);
-    expect(after.state).toBe("submitted");
-    expect(after.summary).toBe("");
+    expect(after).toMatchObject({ state: "submitted", verdict: "approve", summary: "Looks good" });
     expect(after.threadWatermarks).toEqual({ A: 5, B: 6, Z: 40 });
     expect(calls).toEqual([]);
   });
 
-  it("never posts a review, whatever the draft says", async () => {
-    const review = await insertReview({ origin: "manual" });
+  it("never touches the posted review, whatever the draft says", async () => {
+    const review = await insertReview({ ...posted, origin: "manual" });
     const run = await insertRun(review.id, "threads-only");
     await parseReviewOutput(
       run.id,
@@ -229,18 +247,15 @@ describe("threads-only runs", () => {
       }),
     );
     const after = await row(review.id);
-    expect(after).toMatchObject({
-      state: "ready",
-      verdict: "comment",
-      summary: "",
-      fileComments: [],
-    });
+    expect(after).toMatchObject({ state: "submitted", ...posted });
+    expect(after.threadActions).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   it("auto-submits on_pr_post without a review, a held thread not blocking the reply", async () => {
     const repoUrl = `https://github.com/o/fu-${++n}`;
     await insertRepo({ repoUrl, externalReviewMode: "on_pr_post" });
-    const review = await insertReview({ repoUrl });
+    const review = await insertReview({ ...posted, repoUrl });
     const run = await insertRun(review.id, "threads-only", { threadWatermarks: { A: 5, B: 6 } });
     await parseReviewOutput(
       run.id,
@@ -253,9 +268,27 @@ describe("threads-only runs", () => {
       }),
     );
     const after = await row(review.id);
-    expect(after.state).toBe("submitted");
+    expect(after).toMatchObject({ state: "submitted", summary: "Looks good" });
     expect(calls).toEqual(["reply:B"]);
     expect(after.threadWatermarks).toEqual({ A: 5, B: 99 });
+  });
+
+  it("leave the posted review submitted when the run fails, past what it saw", async () => {
+    const review = await insertReview({ ...posted, threadWatermarks: { A: 9 } });
+    const run = await insertRun(review.id, "threads-only", { threadWatermarks: { A: 5, B: 6 } });
+    await failReviewForRun(run, "run_failed", "boom");
+    expect(await row(review.id)).toMatchObject({
+      state: "submitted",
+      summary: "Looks good",
+      threadWatermarks: { A: 9, B: 6 },
+    });
+  });
+
+  it("a failed full review still fails", async () => {
+    const review = await insertReview();
+    const run = await insertRun(review.id, "initial");
+    await failReviewForRun(run, "run_failed", "boom");
+    expect((await row(review.id)).state).toBe("failed");
   });
 });
 

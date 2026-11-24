@@ -4,7 +4,7 @@ import { readPrConversation } from "./pr-conversation.js";
  *
  * Each `pr_reviews` row is the canonical record of a review attached to a
  * single PR. Agent executions live in `pr_review_runs` (initial / rereview
- * / chat). State transitions are recorded in `pr_review_events`.
+ * / threads-only / chat). State transitions are recorded in `pr_review_events`.
  *
  * The agent itself runs on the repo-pod infrastructure via the dedicated
  * `pr-review-worker`. This service owns DB manipulations and the HTTP
@@ -43,7 +43,7 @@ import {
   prReviewEvents,
   prReviewChatMessages,
 } from "../db/schema.js";
-import { eq, and, sql, asc, desc, inArray, isNull, lt, or } from "drizzle-orm";
+import { eq, and, sql, asc, desc, inArray, isNull, lt, or, type SQL } from "drizzle-orm";
 import { getGitPlatformForRepo } from "./git-token-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
 import * as runLogService from "./run-log-service.js";
@@ -63,7 +63,6 @@ import {
   ThreadActionsNotAppliedError,
   parseHeldThreads,
   threadWatermarks,
-  mergeWatermarks,
   hasEnabledThreadActions,
   type ThreadStep,
 } from "./pr-review-thread-actions.js";
@@ -450,6 +449,11 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
     logger.info({ prUrl: input.prUrl, reviewId: existing.id }, "PR review launched elsewhere");
     return { review: existing, raced: true as const };
   }
+  const followUp = input.runKind === "threads-only";
+  if (existing && followUp && existing.headSha !== prContext.headSha) {
+    // A push landed since the sweep looked: the next sweep re-reviews it.
+    return { review: existing, raced: true as const };
+  }
   let review: PrReview;
   if (existing) {
     // Reset to queued/reviewing with fresh head_sha. Keep origin sticky —
@@ -461,15 +465,20 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
     const [reset] = await db
       .update(prReviews)
       .set({
-        headSha: prContext.headSha,
+        // A follow-up keeps the review already posted on the PR.
+        ...(followUp
+          ? {}
+          : {
+              headSha: prContext.headSha,
+              verdict: null,
+              summary: null,
+              fileComments: null,
+              threadActions: [],
+              submittedAt: null,
+              autoSubmitted: false,
+            }),
         state: input.startInWaitingCi ? PrReviewState.WAITING_CI : PrReviewState.QUEUED,
         origin,
-        verdict: null,
-        summary: null,
-        fileComments: null,
-        threadActions: [],
-        submittedAt: null,
-        autoSubmitted: false,
         errorMessage: null,
         controlIntent: null,
         reconcileBackoffUntil: null,
@@ -552,13 +561,6 @@ export async function launchPrReview(input: LaunchPrReviewInput) {
   return { review, run };
 }
 
-/**
- * Create a fresh pr_review_runs row and push a job onto the worker queue.
- * Transitions the parent pr_reviews row to `reviewing`.
- *
- * This is the single funnel for kicking off any kind of review run
- * (initial / rereview / chat).
- */
 /** Where Optio's threads stand as a run starts: what the run will have seen once it drafts. */
 async function snapshotThreadWatermarks(
   review: PrReview,
@@ -591,6 +593,13 @@ interface RepoConfigLike {
   testCommand?: string | null;
 }
 
+/**
+ * Create a fresh pr_review_runs row and push a job onto the worker queue.
+ * Transitions the parent pr_reviews row to `reviewing`.
+ *
+ * This is the single funnel for kicking off any kind of review run
+ * (initial / rereview / threads-only / chat).
+ */
 export async function enqueueReviewRun(
   prReviewId: string,
   kind: PrReviewRunKind,
@@ -813,28 +822,25 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
     extractVerdictJson(draftFile) ?? extractVerdictJson(logs.map((l) => l.content).join("\n"));
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (parsed?.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
-    updates.verdict = parsed.verdict;
+  const followUp = run.kind === "threads-only";
+  if (!followUp) {
+    if (parsed?.verdict && ["approve", "request_changes", "comment"].includes(parsed.verdict)) {
+      updates.verdict = parsed.verdict;
+    }
+    if (typeof parsed?.summary === "string") updates.summary = parsed.summary;
+    if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
   }
-  if (typeof parsed?.summary === "string") updates.summary = parsed.summary;
-  if (Array.isArray(parsed?.fileComments)) updates.fileComments = parsed.fileComments;
   const threadActions = parsed ? parseThreadActions(parsed.threadActions) : null;
   if (threadActions) {
     updates.threadActions = threadActions;
     updates.threadActionProgress = {};
   }
-  const followUp = run.kind === "threads-only";
-  if (followUp) {
-    updates.verdict = "comment";
-    updates.summary = "";
-    updates.fileComments = [];
-  }
-  const held = parseHeldThreads(parsed?.heldThreads);
+  const seen = run.metadata?.threadWatermarks as PrReviewThreadWatermarks | undefined;
+  const held = parseHeldThreads(parsed?.heldThreads)?.filter((t) => !seen || t.threadId in seen);
   const wasHeld = new Set(review.heldThreads.map((t) => t.threadId));
   const newlyHeld = (held ?? []).filter((t) => !wasHeld.has(t.threadId));
   if (held) updates.heldThreads = held;
-  const seen = run.metadata?.threadWatermarks as PrReviewThreadWatermarks | undefined;
-  if (seen) updates.threadWatermarks = mergeWatermarks(review.threadWatermarks, seen);
+  if (seen) updates.threadWatermarks = raiseWatermarks(seen);
 
   // Fall back to the run's result summary if we couldn't parse JSON, unless
   // the draft deliberately has no summary because it only acts on threads.
@@ -846,14 +852,12 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
   }
 
   await db.update(prReviews).set(updates).where(eq(prReviews.id, review.id));
-  await transitionPrReview(review.id, PrReviewState.READY, "agent_drafted", { runId });
-  if (newlyHeld.length) await notifyNewlyHeld(review.id, newlyHeld);
-
-  if (followUp && !hasEnabledThreadActions(threadActions ?? [])) {
-    // Nothing to post: the review already on the PR stands.
-    await transitionPrReview(review.id, PrReviewState.SUBMITTED, "follow_up_no_action", { runId });
+  if (followUp) {
+    await settleFollowUp(review, runId, newlyHeld);
     return;
   }
+  await transitionPrReview(review.id, PrReviewState.READY, "agent_drafted", { runId });
+  if (newlyHeld.length) await notifyNewlyHeld(review.id, newlyHeld);
 
   logger.info(
     { runId, prReviewId: review.id, hasStructuredOutput: !!parsed },
@@ -881,6 +885,82 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
       logger.warn({ err, prReviewId: review.id }, "Auto-submit failed — left in ready state");
     }
   }
+}
+
+/**
+ * A follow-up never leaves the posted review: it goes straight back to
+ * SUBMITTED, its thread actions pending for a person, or run unattended
+ * (replies only) when the repo posts reviews by itself.
+ */
+async function settleFollowUp(
+  review: PrReview,
+  runId: string,
+  newlyHeld: PrReviewHeldThread[],
+): Promise<void> {
+  const settled = await transitionPrReview(
+    review.id,
+    PrReviewState.SUBMITTED,
+    "follow_up_drafted",
+    { runId },
+  );
+  if (newlyHeld.length) await notifyNewlyHeld(review.id, newlyHeld);
+  if (!settled || !hasEnabledThreadActions(settled.threadActions ?? [])) return;
+  const { getRepoByUrl } = await import("./repo-service.js");
+  const repoConfig = await getRepoByUrl(review.repoUrl, review.workspaceId ?? undefined);
+  if (
+    review.origin !== "auto" ||
+    review.userEngaged ||
+    repoConfig?.externalReviewMode !== "on_pr_post"
+  ) {
+    return;
+  }
+  try {
+    await submitReview(review.id, undefined, {
+      unattended: true,
+      resolveThreads: true,
+      followUp: true,
+    });
+    logger.info({ prReviewId: review.id }, "Follow-up thread actions applied (on_pr_post)");
+  } catch (err) {
+    logger.warn({ err, prReviewId: review.id }, "Follow-up thread actions failed; left pending");
+  }
+}
+
+/**
+ * Where a run that ends without a draft leaves its review: a follow-up's
+ * review is the one already posted, so it stays submitted, past the replies
+ * the run saw so they don't relaunch it every sweep.
+ */
+export async function failReviewForRun(
+  run: { prReviewId: string; id: string; kind: string; metadata: unknown },
+  trigger: string,
+  message: string,
+): Promise<void> {
+  if (run.kind !== "threads-only") {
+    await transitionPrReview(run.prReviewId, PrReviewState.FAILED, trigger, {
+      message,
+      runId: run.id,
+    });
+    return;
+  }
+  const seen = (run.metadata as { threadWatermarks?: PrReviewThreadWatermarks } | null)
+    ?.threadWatermarks;
+  if (seen) {
+    await db
+      .update(prReviews)
+      .set({ threadWatermarks: raiseWatermarks(seen) })
+      .where(eq(prReviews.id, run.prReviewId));
+  }
+  await transitionPrReview(run.prReviewId, PrReviewState.SUBMITTED, `follow_up_${trigger}`, {
+    message,
+    runId: run.id,
+  });
+}
+
+/** An atomic per-thread max, so concurrent writers never lower a mark. */
+function raiseWatermarks(marks: PrReviewThreadWatermarks): SQL {
+  const merged = sql`${prReviews.threadWatermarks} || ${JSON.stringify(marks)}::jsonb`;
+  return sql`(SELECT coalesce(jsonb_object_agg(e.key, greatest(coalesce((${prReviews.threadWatermarks} ->> e.key)::bigint, 0), e.value::bigint)), '{}'::jsonb) FROM jsonb_each_text(${merged}) AS e)`;
 }
 
 async function notifyNewlyHeld(id: string, held: PrReviewHeldThread[]): Promise<void> {
@@ -976,7 +1056,7 @@ async function releaseSubmit(id: string): Promise<void> {
 export async function submitReview(
   id: string,
   userId?: string,
-  opts: { unattended?: boolean; resolveThreads?: boolean } = {},
+  opts: { unattended?: boolean; resolveThreads?: boolean; followUp?: boolean } = {},
 ): Promise<{
   review: PrReview;
   reviewUrl?: string;
@@ -985,7 +1065,7 @@ export async function submitReview(
   const [seen] = await db.select().from(prReviews).where(eq(prReviews.id, id));
   if (!seen) throw new Error("PR review not found");
   const state = seen.state as PrReviewState;
-  const finishing = state === PrReviewState.SUBMITTED && !opts.unattended;
+  const finishing = state === PrReviewState.SUBMITTED && (!opts.unattended || !!opts.followUp);
   if (!finishing && state !== PrReviewState.READY && state !== PrReviewState.STALE) {
     throw new Error(`Cannot submit review in ${state} state`);
   }
@@ -1018,13 +1098,9 @@ async function markActedThreads(
       postedReviewIds,
     );
     const marks = Object.fromEntries(Object.entries(now).filter(([t]) => acted.has(t)));
-    const [current] = await db
-      .select({ threadWatermarks: prReviews.threadWatermarks })
-      .from(prReviews)
-      .where(eq(prReviews.id, review.id));
     await db
       .update(prReviews)
-      .set({ threadWatermarks: mergeWatermarks(current?.threadWatermarks ?? {}, marks) })
+      .set({ threadWatermarks: raiseWatermarks(marks) })
       .where(eq(prReviews.id, review.id));
   } catch (err) {
     logger.warn({ err, prReviewId: review.id }, "Could not record handled review threads");

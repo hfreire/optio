@@ -132,7 +132,12 @@ const PR_REVIEW_TRANSITIONS: Record<PrReviewState, PrReviewState[]> = {
     PrReviewState.CANCELLED,
     PrReviewState.FAILED,
   ],
-  [PrReviewState.REVIEWING]: [PrReviewState.READY, PrReviewState.FAILED, PrReviewState.CANCELLED],
+  [PrReviewState.REVIEWING]: [
+    PrReviewState.READY,
+    PrReviewState.SUBMITTED, // a threads-only follow-up keeps the posted review
+    PrReviewState.FAILED,
+    PrReviewState.CANCELLED,
+  ],
   [PrReviewState.READY]: [
     PrReviewState.SUBMITTED,
     PrReviewState.STALE,

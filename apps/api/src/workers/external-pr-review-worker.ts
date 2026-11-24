@@ -16,9 +16,9 @@
  * the reconciler and worker pipelines fire uniformly.
  */
 import { Queue, Worker } from "bullmq";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { repos, prReviews } from "../db/schema.js";
+import { repos, prReviews, prReviewRuns } from "../db/schema.js";
 import {
   parseIntEnv,
   parseRepoUrl,
@@ -102,6 +102,9 @@ export function startExternalPrReviewWorker() {
 }
 
 /** A submitted auto review whose threads got a reply since, with no new push. */
+/** Follow-ups per posted review, whatever the thread replies say. */
+const MAX_FOLLOW_UPS = 5;
+
 async function awaitsThreadFollowUp(
   review: typeof prReviews.$inferSelect,
   pr: PullRequest,
@@ -113,11 +116,20 @@ async function awaitsThreadFollowUp(
     review.state !== PrReviewState.SUBMITTED ||
     pr.headSha !== review.headSha ||
     !review.postedReviewIds.length ||
-    !platform.listReviewThreads ||
-    (pr.updatedAt && Date.parse(pr.updatedAt) <= review.updatedAt.getTime())
+    !platform.listReviewThreads
   ) {
     return false;
   }
+  const runs = await db
+    .select({ kind: prReviewRuns.kind, createdAt: prReviewRuns.createdAt })
+    .from(prReviewRuns)
+    .where(and(eq(prReviewRuns.prReviewId, review.id), ne(prReviewRuns.kind, "chat")))
+    .orderBy(desc(prReviewRuns.createdAt));
+  // A reply that lands while a run is going is newer than that run's start.
+  const lastStart = runs[0]?.createdAt ?? review.updatedAt;
+  if (pr.updatedAt && Date.parse(pr.updatedAt) <= lastStart.getTime()) return false;
+  const lastFull = runs.findIndex((r) => r.kind !== "threads-only");
+  if ((lastFull === -1 ? runs.length : lastFull) >= MAX_FOLLOW_UPS) return false;
   const lookup = await platform.listReviewThreads(ri, pr.number);
   return (
     threadsAwaitingFollowUp(lookup, review.postedReviewIds, review.threadWatermarks).length > 0

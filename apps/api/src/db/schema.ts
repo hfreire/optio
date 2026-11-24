@@ -1718,7 +1718,7 @@ export const prReviewRuns = pgTable(
     prReviewId: uuid("pr_review_id")
       .notNull()
       .references(() => prReviews.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull().default("initial"), // "initial" | "rereview" | "chat"
+    kind: text("kind").notNull().default("initial"), // "initial" | "rereview" | "threads-only" | "chat"
     state: prReviewRunStateEnum("state").notNull().default("queued"),
     prompt: text("prompt"),
     sessionId: text("session_id"),

@@ -256,16 +256,6 @@ export function threadsAwaitingFollowUp(
   );
 }
 
-/** Keep the higher mark per thread. */
-export function mergeWatermarks(
-  a: PrReviewThreadWatermarks,
-  b: PrReviewThreadWatermarks,
-): PrReviewThreadWatermarks {
-  const out = { ...a };
-  for (const [k, v] of Object.entries(b)) out[k] = Math.max(out[k] ?? 0, v);
-  return out;
-}
-
 type Vetting = { kind: "refused" | "author"; message: string };
 
 /**
