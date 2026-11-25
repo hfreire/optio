@@ -545,7 +545,7 @@ describe("environmentOptions", () => {
       await recordClaudeConfigSync(
         row.id,
         { ok: true, resolvedSha: "b".repeat(40), totalSizeBytes: 1, files },
-        { sourceUrl: row.sourceUrl, ref: row.ref, subpath: row.subpath },
+        { sourceUrl: row.sourceUrl, encryptedSourceUrl: null, ref: row.ref, subpath: row.subpath },
       );
       return row;
     }

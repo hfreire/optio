@@ -12,6 +12,7 @@ import {
 } from "../services/ownership.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { requireRole } from "../plugins/auth.js";
+import { isGitSourceUrlAllowed } from "../utils/git-source-url.js";
 import { withManagedBy } from "../services/config/managed.js";
 
 const InstalledSkillSchema = z.unknown().describe("Installed (marketplace-sourced) skill row");
@@ -34,7 +35,11 @@ const skillNameSchema = z
 const sourceUrlSchema = z
   .string()
   .min(1)
-  .refine((v) => !v.trimStart().startsWith("-"), 'sourceUrl must not start with "-"');
+  .refine((v) => !v.trimStart().startsWith("-"), 'sourceUrl must not start with "-"')
+  .refine(
+    (v) => isGitSourceUrlAllowed(v),
+    "The outbound policy doesn't allow this source's host — list it in OPTIO_OUTBOUND_ALLOWED_HOSTS",
+  );
 const refSchema = z
   .string()
   .refine((v) => !v.trimStart().startsWith("-"), 'ref must not start with "-"');

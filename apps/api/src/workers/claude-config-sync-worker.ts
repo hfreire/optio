@@ -25,7 +25,9 @@ import { claudeConfigFiles, claudeConfigSources } from "../db/schema.js";
 import {
   CLAUDE_CONFIG_SYNC_SENTINEL,
   claudeConfigFilesSynced,
+  claudeConfigGitUrl,
   recordClaudeConfigSync,
+  sealClaudeConfigSourceUrl,
   DEFAULT_CLAUDE_CONFIG_REF,
 } from "../services/claude-config-service.js";
 import {
@@ -151,23 +153,50 @@ export async function enqueueClaudeConfigSync(id: string): Promise<void> {
   );
 }
 
+/** A source edited while it syncs is synced again in the same job, this many times at most. */
+const MAX_SYNC_ROUNDS = 3;
+
 export async function syncClaudeConfigOne(id: string): Promise<void> {
   const log = logger.child({ claudeConfigId: id });
-  const [row] = await db.select().from(claudeConfigSources).where(eq(claudeConfigSources.id, id));
-  if (!row) {
-    log.warn("claude config source vanished before sync");
-    return;
+  for (let round = 1; round <= MAX_SYNC_ROUNDS; round++) {
+    if ((await syncClaudeConfigRound(id, log)) === "settled") return;
+    log.info({ round }, "claude config source changed during the sync; result discarded");
   }
+  log.warn("claude config source kept changing while it synced; left to the next pass");
+}
+
+async function syncClaudeConfigRound(
+  id: string,
+  log: typeof logger,
+): Promise<"settled" | "changed"> {
+  const [stored] = await db
+    .select()
+    .from(claudeConfigSources)
+    .where(eq(claudeConfigSources.id, id));
+  if (!stored) {
+    log.warn("claude config source vanished before sync");
+    return "settled";
+  }
+  const row = await sealClaudeConfigSourceUrl(stored);
+  if (!row) return "changed";
   if (!row.enabled) {
     log.info("claude config source disabled; skipping sync");
-    return;
+    return "settled";
   }
 
-  const synced = { sourceUrl: row.sourceUrl, ref: row.ref, subpath: row.subpath };
+  const synced = {
+    sourceUrl: row.sourceUrl,
+    encryptedSourceUrl: row.encryptedSourceUrl,
+    ref: row.ref,
+    subpath: row.subpath,
+  };
+  let gitUrl = row.sourceUrl;
   let clone: string | null = null;
-  let stage = "resolve the source ref";
+  let stage = "read the source credentials";
   try {
-    const sha = await resolveRefToSha(row.sourceUrl, row.ref, {
+    gitUrl = claudeConfigGitUrl(row);
+    stage = "resolve the source ref";
+    const sha = await resolveRefToSha(gitUrl, row.ref, {
       strict: { defaultRef: DEFAULT_CLAUDE_CONFIG_REF },
     });
     if (
@@ -177,11 +206,11 @@ export async function syncClaudeConfigOne(id: string): Promise<void> {
       (await claudeConfigFilesSynced(id, sha))
     ) {
       log.info({ sha }, "already synced at this commit; nothing to do");
-      return;
+      return "settled";
     }
 
     stage = "clone the source repository";
-    clone = await cloneIntoScratch(row.sourceUrl, sha, log, { exact: true });
+    clone = await cloneIntoScratch(gitUrl, sha, log, { exact: true });
     stage = "read the config files";
     const dir = await skillDirIn(clone, row.subpath);
     if (!dir) throw new Error(`subpath '${row.subpath}' not found in source@${sha}`);
@@ -192,15 +221,15 @@ export async function syncClaudeConfigOne(id: string): Promise<void> {
       { ok: true, resolvedSha: sha, totalSizeBytes, files },
       synced,
     );
-    if (!recorded) {
-      log.info({ sha }, "claude config source changed during the sync; result discarded");
-      return;
-    }
+    if (!recorded) return "changed";
     log.info({ sha, fileCount: files.length, bytes: totalSizeBytes }, "claude config synced");
+    return "settled";
   } catch (err) {
-    const msg = formatSkillSyncError(err, stage, row.sourceUrl);
+    const msg = formatSkillSyncError(err, stage, gitUrl);
     log.error({ error: msg }, "claude config sync failed");
-    await recordClaudeConfigSync(id, { ok: false, error: msg }, synced);
+    return (await recordClaudeConfigSync(id, { ok: false, error: msg }, synced))
+      ? "settled"
+      : "changed";
   } finally {
     if (clone) await fs.rm(path.dirname(clone), { recursive: true, force: true }).catch(() => {});
   }

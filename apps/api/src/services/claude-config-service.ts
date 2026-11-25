@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { claudeConfigFiles, claudeConfigSources } from "../db/schema.js";
 import { isUniqueViolation } from "../utils/db-errors.js";
+import { splitGitSourceCredentials } from "../utils/git-source-url.js";
 import { normalizeSubpath } from "./installed-skill-service.js";
+import { ALG_AES_256_GCM_V1, decrypt, encrypt } from "./secret-service.js";
 import { selectClaudeConfigSource, type ClaudeConfigFile } from "./claude-config.js";
 import {
   normalizeRepoUrl,
@@ -41,6 +44,66 @@ function subpathOf(raw: string | undefined): string {
 /** The marker row every successful sync writes beside the files (content: the commit). */
 export const CLAUDE_CONFIG_SYNC_SENTINEL = ".optio-synced";
 
+type SourceRow = typeof claudeConfigSources.$inferSelect;
+type SealedSourceUrl = Pick<
+  SourceRow,
+  "sourceUrl" | "encryptedSourceUrl" | "sourceUrlIv" | "sourceUrlAuthTag"
+>;
+
+const sourceUrlAad = (id: string) => Buffer.from(`claude-config:${id}:sourceUrl`);
+
+/** A URL that signs in is sealed whole; `source_url` keeps its credential-free form. */
+function sourceUrlColumns(id: string, sourceUrl: string): SealedSourceUrl {
+  const { publicUrl, hasCredentials } = splitGitSourceCredentials(sourceUrl);
+  if (!hasCredentials) {
+    return { sourceUrl, encryptedSourceUrl: null, sourceUrlIv: null, sourceUrlAuthTag: null };
+  }
+  const blob = encrypt(sourceUrl, sourceUrlAad(id));
+  return {
+    sourceUrl: publicUrl,
+    encryptedSourceUrl: blob.ciphertext,
+    sourceUrlIv: blob.iv,
+    sourceUrlAuthTag: blob.authTag,
+  };
+}
+
+/** The URL git clones, credentials included. For the sync worker only: never returned or logged. */
+export function claudeConfigGitUrl(row: SealedSourceUrl & { id: string }): string {
+  if (!row.encryptedSourceUrl || !row.sourceUrlIv || !row.sourceUrlAuthTag) return row.sourceUrl;
+  return decrypt(
+    {
+      alg: ALG_AES_256_GCM_V1,
+      iv: row.sourceUrlIv,
+      ciphertext: row.encryptedSourceUrl,
+      authTag: row.sourceUrlAuthTag,
+    },
+    sourceUrlAad(row.id),
+    `Claude config source ${row.id} sourceUrl`,
+  );
+}
+
+/**
+ * Seals the credentials of a row stored before source URLs were sealed.
+ * Resolves the row as it now is, or null when it changed meanwhile.
+ */
+export async function sealClaudeConfigSourceUrl(row: SourceRow): Promise<SourceRow | null> {
+  if (row.encryptedSourceUrl) return row;
+  const columns = sourceUrlColumns(row.id, row.sourceUrl);
+  if (!columns.encryptedSourceUrl) return row;
+  const [sealed] = await db
+    .update(claudeConfigSources)
+    .set(columns)
+    .where(
+      and(
+        eq(claudeConfigSources.id, row.id),
+        eq(claudeConfigSources.sourceUrl, row.sourceUrl),
+        isNull(claudeConfigSources.encryptedSourceUrl),
+      ),
+    )
+    .returning();
+  return sealed ?? null;
+}
+
 export async function listClaudeConfigSources(
   workspaceId?: string | null,
 ): Promise<ClaudeConfigSource[]> {
@@ -67,13 +130,15 @@ export async function createClaudeConfigSource(
   input: CreateClaudeConfigSourceInput,
   workspaceId?: string | null,
 ): Promise<ClaudeConfigSource> {
+  const id = randomUUID();
   try {
     const [row] = await db
       .insert(claudeConfigSources)
       .values({
+        id,
         workspaceId: workspaceId ?? null,
         repoUrl: input.repoUrl?.trim() ? normalizeRepoUrl(input.repoUrl.trim()) : null,
-        sourceUrl: input.sourceUrl,
+        ...sourceUrlColumns(id, input.sourceUrl),
         ref: input.ref?.trim() || DEFAULT_REF,
         subpath: subpathOf(input.subpath),
         enabled: input.enabled ?? true,
@@ -92,7 +157,7 @@ export async function updateClaudeConfigSource(
 ): Promise<ClaudeConfigSource | null> {
   const updates: Partial<typeof claudeConfigSources.$inferInsert> = { updatedAt: new Date() };
   if (input.enabled !== undefined) updates.enabled = input.enabled;
-  if (input.sourceUrl !== undefined) updates.sourceUrl = input.sourceUrl;
+  if (input.sourceUrl !== undefined) Object.assign(updates, sourceUrlColumns(id, input.sourceUrl));
   if (input.ref !== undefined) updates.ref = input.ref.trim() || DEFAULT_REF;
   if (input.subpath !== undefined) updates.subpath = subpathOf(input.subpath);
   // A ref or subpath edit keeps serving the last good snapshot until the new
@@ -123,8 +188,9 @@ export interface SyncedClaudeConfigFile {
 }
 
 /**
- * Records a sync, only while the source still has the url, ref and subpath
- * the sync resolved (false, and nothing written, otherwise). On success the
+ * Records a sync, only while the source still has the url (its sealed form
+ * too: new credentials are a new source), ref and subpath the sync resolved
+ * (false, and nothing written, otherwise). On success the
  * files, replaced whole, the sentinel and the row's totals land in one
  * transaction.
  */
@@ -138,7 +204,7 @@ export async function recordClaudeConfigSync(
         files: readonly SyncedClaudeConfigFile[];
       }
     | { ok: false; error: string },
-  synced: { sourceUrl: string; ref: string; subpath: string },
+  synced: { sourceUrl: string; encryptedSourceUrl: Buffer | null; ref: string; subpath: string },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [current] = await tx
@@ -148,6 +214,9 @@ export async function recordClaudeConfigSync(
         and(
           eq(claudeConfigSources.id, id),
           eq(claudeConfigSources.sourceUrl, synced.sourceUrl),
+          synced.encryptedSourceUrl
+            ? eq(claudeConfigSources.encryptedSourceUrl, synced.encryptedSourceUrl)
+            : isNull(claudeConfigSources.encryptedSourceUrl),
           eq(claudeConfigSources.ref, synced.ref),
           eq(claudeConfigSources.subpath, synced.subpath),
         ),
@@ -276,12 +345,12 @@ export async function getClaudeConfigSourceForRun(
   return selectClaudeConfigSource(rows, repoUrl, workspaceId);
 }
 
-function mapRow(row: typeof claudeConfigSources.$inferSelect): ClaudeConfigSource {
+function mapRow(row: SourceRow): ClaudeConfigSource {
   return {
     id: row.id,
     workspaceId: row.workspaceId,
     repoUrl: row.repoUrl,
-    sourceUrl: row.sourceUrl,
+    sourceUrl: splitGitSourceCredentials(row.sourceUrl).publicUrl,
     ref: row.ref,
     subpath: row.subpath,
     resolvedSha: row.resolvedSha,

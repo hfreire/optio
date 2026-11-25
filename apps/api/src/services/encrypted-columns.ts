@@ -15,6 +15,7 @@ import { and, asc, gt, isNotNull, type SQL } from "drizzle-orm";
 import type { AnyPgColumn, PgDatabase, PgTable } from "drizzle-orm/pg-core";
 import {
   authProviderConfigs,
+  claudeConfigSources,
   connections,
   modelProviders,
   remoteWorkspaceConnections,
@@ -179,6 +180,20 @@ export const ENCRYPTED_COLUMNS: readonly EncryptedColumn[] = [
     }),
     what: (r) => `repo ${r.name} (Slack webhook)`,
     aads: (r) => [Buffer.from(`repo:${r.id}:slackWebhookUrl`)],
+  }),
+  // claude-config-service.ts sourceUrlColumns / claudeConfigGitUrl
+  encryptedColumn({
+    label: "Claude config source URLs",
+    columns: () => ({
+      table: claudeConfigSources,
+      id: claudeConfigSources.id,
+      ciphertext: claudeConfigSources.encryptedSourceUrl,
+      iv: claudeConfigSources.sourceUrlIv,
+      authTag: claudeConfigSources.sourceUrlAuthTag,
+      fields: {},
+    }),
+    what: (r) => `Claude config source ${r.id}`,
+    aads: (r) => [Buffer.from(`claude-config:${r.id}:sourceUrl`)],
   }),
   // sign-in-config-service.ts secretAAD
   encryptedColumn({

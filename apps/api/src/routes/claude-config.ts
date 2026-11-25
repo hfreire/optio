@@ -6,6 +6,7 @@ import * as claudeConfigService from "../services/claude-config-service.js";
 import { ErrorResponseSchema, IdParamsSchema } from "../schemas/common.js";
 import { requireRole } from "../plugins/auth.js";
 import { redactSkillSource } from "../utils/skill-sync-error.js";
+import { isGitSourceUrlAllowed } from "../utils/git-source-url.js";
 
 const ClaudeConfigSourceSchema = z.unknown().describe("Claude config repo source row");
 
@@ -13,7 +14,11 @@ const ClaudeConfigSourceSchema = z.unknown().describe("Claude config repo source
 const sourceUrlSchema = z
   .string()
   .min(1)
-  .refine((v) => !v.trimStart().startsWith("-"), 'sourceUrl must not start with "-"');
+  .refine((v) => !v.trimStart().startsWith("-"), 'sourceUrl must not start with "-"')
+  .refine(
+    (v) => isGitSourceUrlAllowed(v),
+    "The outbound policy doesn't allow this source's host — list it in OPTIO_OUTBOUND_ALLOWED_HOSTS",
+  );
 const refSchema = z
   .string()
   .refine((v) => !v.trimStart().startsWith("-"), 'ref must not start with "-"');

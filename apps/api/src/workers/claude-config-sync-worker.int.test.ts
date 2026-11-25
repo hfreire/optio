@@ -38,6 +38,19 @@ vi.mock("bullmq", () => ({
   },
 }));
 
+// Runs just before a sync records its result: where a PATCH lands mid-sync.
+const beforeRecord = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
+vi.mock("../services/claude-config-service.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../services/claude-config-service.js")>();
+  return {
+    ...real,
+    recordClaudeConfigSync: async (...args: Parameters<typeof real.recordClaudeConfigSync>) => {
+      await beforeRecord.hook?.();
+      return real.recordClaudeConfigSync(...args);
+    },
+  };
+});
+
 const run = promisify(execFile);
 let root: string;
 let source: string;
@@ -167,7 +180,7 @@ describe("claude config sync", () => {
     const recorded = await recordClaudeConfigSync(
       row.id,
       { ok: true, resolvedSha: "a".repeat(40), totalSizeBytes: 0, files: [] },
-      { sourceUrl: row.sourceUrl, ref: "other", subpath: row.subpath },
+      { sourceUrl: row.sourceUrl, encryptedSourceUrl: null, ref: "other", subpath: row.subpath },
     );
     expect(recorded).toBe(false);
     await syncClaudeConfigOne(row.id);
@@ -392,6 +405,101 @@ describe("claude config sync worker", () => {
     expect(
       (await readClaudeConfigFiles(row.id, after.resolvedSha)).map((f) => f.relativePath),
     ).toContain("hooks/guard.sh");
+  });
+
+  it("syncs the new ref in the same job when the source is edited mid-sync", async () => {
+    const { syncClaudeConfigOne, dueClaudeConfigIds } =
+      await import("./claude-config-sync-worker.js");
+    const { updateClaudeConfigSource } = await import("../services/claude-config-service.js");
+    await git(["checkout", "-q", "-b", "mid-sync"]);
+    await fs.writeFile(path.join(source, "mid-sync.md"), "edited\n");
+    await git(["add", "."]);
+    await git(["commit", "-q", "-m", "mid-sync"]);
+    await git(["checkout", "-q", "main"]);
+    const { row } = await newSource();
+
+    let edits = 0;
+    beforeRecord.hook = async () => {
+      if (edits++ === 0) await updateClaudeConfigSource(row.id, { ref: "mid-sync" });
+    };
+    try {
+      await syncClaudeConfigOne(row.id);
+    } finally {
+      beforeRecord.hook = null;
+    }
+
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.ref).toBe("mid-sync");
+    expect(after.lastSyncError).toBeNull();
+    expect(after.lastSyncedAt).not.toBeNull();
+    const files = await readClaudeConfigFiles(row.id, after.resolvedSha);
+    expect(files.map((f) => f.relativePath)).toContain("mid-sync.md");
+    expect(await dueClaudeConfigIds()).not.toContain(row.id);
+  });
+
+  it("gives up after two extra rounds and leaves a source that keeps changing due", async () => {
+    const { syncClaudeConfigOne, dueClaudeConfigIds } =
+      await import("./claude-config-sync-worker.js");
+    const { updateClaudeConfigSource } = await import("../services/claude-config-service.js");
+    const { row } = await newSource();
+    let rounds = 0;
+    beforeRecord.hook = async () => {
+      rounds++;
+      await updateClaudeConfigSource(row.id, { subpath: rounds % 2 ? "home" : "." });
+    };
+    try {
+      await syncClaudeConfigOne(row.id);
+    } finally {
+      beforeRecord.hook = null;
+    }
+    expect(rounds).toBe(3);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.resolvedSha).toBeNull();
+    expect(await dueClaudeConfigIds()).toContain(row.id);
+  });
+
+  it("records a source the outbound policy blocks as the sync error, without calling git", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const ws = await insertWorkspace();
+    const [row] = await db
+      .insert(claudeConfigSources)
+      .values({ workspaceId: ws.id, sourceUrl: "git@169.254.169.254:acme/dot.git" })
+      .returning();
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.lastSyncError).toContain("Could not resolve the source ref.");
+    expect(after.lastSyncError).toContain("blocked: 169.254.169.254 is a cloud metadata address");
+    expect(after.resolvedSha).toBeNull();
+  });
+
+  it("seals the credentials of a row stored in the clear the first time it syncs", async () => {
+    const { syncClaudeConfigOne } = await import("./claude-config-sync-worker.js");
+    const { claudeConfigGitUrl } = await import("../services/claude-config-service.js");
+    const ws = await insertWorkspace();
+    const legacy = "https://bot:legacy-tok-123@169.254.169.254/acme/dot.git";
+    const [row] = await db
+      .insert(claudeConfigSources)
+      .values({ workspaceId: ws.id, sourceUrl: legacy })
+      .returning();
+    await syncClaudeConfigOne(row.id);
+    const [after] = await db
+      .select()
+      .from(claudeConfigSources)
+      .where(eq(claudeConfigSources.id, row.id));
+    expect(after.sourceUrl).toBe("https://169.254.169.254/acme/dot.git");
+    expect(after.encryptedSourceUrl).not.toBeNull();
+    expect(claudeConfigGitUrl(after)).toBe(legacy);
+    expect(after.lastSyncError).toContain("blocked:");
+    expect(JSON.stringify(after)).not.toContain("legacy-tok-123");
   });
 
   it("rejects a sync-one job with no source id", async () => {

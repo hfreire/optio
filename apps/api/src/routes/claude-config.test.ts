@@ -87,6 +87,40 @@ describe("claude config routes", () => {
     }
   });
 
+  it.each([
+    "https://169.254.169.254/latest/meta-data",
+    "https://localhost/x.git",
+    "git@gitea.git.svc.cluster.local:acme/dot.git",
+    "ssh://git@10.0.0.7/acme/dot.git",
+    "ext::sh -c id",
+  ])("rejects the internal source %s with 400", async (sourceUrl) => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/claude-config",
+      payload: { sourceUrl },
+    });
+    expect(created.statusCode).toBe(400);
+    mockGet.mockResolvedValue(row());
+    const patched = await app.inject({
+      method: "PATCH",
+      url: "/api/claude-config/c1",
+      payload: { sourceUrl },
+    });
+    expect(patched.statusCode).toBe(400);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("accepts an scp-style source on a public host", async () => {
+    mockCreate.mockResolvedValue(row());
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/claude-config",
+      payload: { sourceUrl: "git@github.com:acme/dotclaude.git" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
   it("lists the workspace's sources", async () => {
     mockList.mockResolvedValue([row()]);
     const res = await app.inject({ method: "GET", url: "/api/claude-config" });

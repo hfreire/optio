@@ -32,6 +32,7 @@ import { parseIntEnv } from "@optio/shared";
 import type { InstalledSkillManifest } from "@optio/shared";
 import { logger } from "../logger.js";
 import { formatSkillSyncError, redactSkillSource } from "../utils/skill-sync-error.js";
+import { assertGitSourceAllowed, gitFileSourcesAllowed } from "../utils/git-source-url.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
 import { underPollerLease } from "../services/poller-lease.js";
@@ -308,10 +309,7 @@ const GIT_ENV_ALLOWLIST = [
  * GIT_ENV_ALLOWLIST.
  */
 export function skillGitEnv(): NodeJS.ProcessEnv {
-  const allowFile =
-    process.env.OPTIO_SKILL_ALLOW_FILE_SOURCES === "1" ||
-    process.env.OPTIO_RUNTIME === "fake" ||
-    !!process.env.VITEST;
+  const allowFile = gitFileSourcesAllowed();
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
@@ -328,6 +326,7 @@ export async function resolveRefToSha(
   opts: { strict?: { defaultRef: string } } = {},
 ): Promise<string> {
   assertSkillSourceArgs(sourceUrl, ref);
+  await assertGitSourceAllowed(sourceUrl);
   if (opts.strict && /^[0-9a-f]{40}$/.test(ref)) return ref;
   // ls-remote returns "<sha>\trefs/heads/<branch>" lines. We try the requested
   // ref directly and fall back to bare HEAD if the ref doesn't exist.
@@ -367,6 +366,7 @@ export async function cloneIntoScratch(
   opts: { exact?: boolean } = {},
 ): Promise<string> {
   assertSkillSourceArgs(sourceUrl, "");
+  await assertGitSourceAllowed(sourceUrl);
   await fs.mkdir(scratchDir(), { recursive: true });
   const tmpRoot = await fs.mkdtemp(path.join(scratchDir(), "skill-"));
   const tmpClone = path.join(tmpRoot, "clone");

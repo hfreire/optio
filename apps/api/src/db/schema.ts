@@ -1478,7 +1478,10 @@ export const claudeConfigSources = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     workspaceId: uuid("workspace_id"),
     repoUrl: text("repo_url"), // null = the workspace's; set = that repo's override
-    sourceUrl: text("source_url").notNull(),
+    sourceUrl: text("source_url").notNull(), // credential-free; the sealed columns hold a URL that signs in
+    encryptedSourceUrl: bytea("encrypted_source_url"),
+    sourceUrlIv: bytea("source_url_iv"),
+    sourceUrlAuthTag: bytea("source_url_auth_tag"),
     ref: text("ref").notNull().default("main"),
     subpath: text("subpath").notNull().default("."),
     resolvedSha: text("resolved_sha"),

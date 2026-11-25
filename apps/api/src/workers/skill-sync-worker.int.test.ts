@@ -288,6 +288,30 @@ describe("skill sync into the database", () => {
     expect(recovered.resolvedSha).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it("records a source the outbound policy blocks as the sync error, without calling git", async () => {
+    const { syncOne } = await import("./skill-sync-worker.js");
+    const skill = await insertSkill();
+    await db
+      .update(installedSkills)
+      .set({ sourceUrl: "ssh://gitea.git.svc.cluster.local/acme/skills.git" })
+      .where(eq(installedSkills.id, skill.id));
+    await syncOne(skill.id);
+    const [after] = await db.select().from(installedSkills).where(eq(installedSkills.id, skill.id));
+    expect(after.lastSyncError).toContain("Could not resolve the source ref.");
+    expect(after.lastSyncError).toContain(
+      "blocked: gitea.git.svc.cluster.local is a private host name",
+    );
+    expect(after.resolvedSha).toBeNull();
+  });
+
+  it("refuses to clone a source the outbound policy blocks", async () => {
+    const { cloneIntoScratch } = await import("./skill-sync-worker.js");
+    const { logger } = await import("../logger.js");
+    await expect(
+      cloneIntoScratch("https://169.254.169.254/acme/skills.git", "a".repeat(40), logger),
+    ).rejects.toThrow(/blocked: 169\.254\.169\.254/);
+  });
+
   it("records a missing subpath as the sync error and keeps no files; deleting the skill cascades", async () => {
     const { syncOne } = await import("./skill-sync-worker.js");
     const skill = await insertSkill("skills/nope");
