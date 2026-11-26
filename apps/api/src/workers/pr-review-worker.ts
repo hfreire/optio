@@ -402,6 +402,7 @@ export function startPrReviewWorker() {
               // The pod reads the PR's diff — anyone's input — so its
               // connections carry no credentials.
               connectionSecrets: false,
+              adapterEnv: agentConfig.env,
             },
             log,
             agentConfig.setupFiles,
@@ -479,9 +480,12 @@ export function startPrReviewWorker() {
             secretProxy: repoConfig.secretProxy ?? false,
             workspaceId,
             isolationPurpose: "review",
+            reserveSlot: true,
           },
         );
         repoPodId = pod.id;
+        // Taken with the pick, so runs picking at once never share one free slot.
+        slotHeld = true;
 
         await db
           .update(prReviewRuns)
@@ -522,13 +526,13 @@ export function startPrReviewWorker() {
           // whatever is at its path before the agent runs — a file the repo
           // commits there, a previous attempt's — is not the agent's.
           clearFiles: [PR_REVIEW_OUTPUT_PATH],
+          slotReserved: true,
           // For claude, seed the stream-json stdin with the initial prompt.
           initialStdin:
             agentType === "claude-code"
               ? buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? "")
               : "",
         });
-        slotHeld = true;
         if (started.output.trim()) {
           log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }
@@ -597,9 +601,6 @@ export function startPrReviewWorker() {
         await endRunJob(hold, ended, log);
         if (repoPodId && slotHeld && ended !== "detached") {
           await repoPool.releaseRepoPodTask(repoPodId).catch(() => {});
-          await repoPool.updateWorktreeState(run.id, "removed").catch(() => {});
-        } else if (repoPodId && !slotHeld) {
-          // The agent never started: the start gave the slot back itself.
           await repoPool.updateWorktreeState(run.id, "removed").catch(() => {});
         }
       }

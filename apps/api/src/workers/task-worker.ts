@@ -144,8 +144,9 @@ export function startTaskWorker() {
       // This job's hold on the run, from the claim on (run-attachment.ts);
       // the finally lets go of it through `endRunJob`.
       let hold: AttachmentHold | null = null;
-      // The pod slot the run holds once its agent started; given back when
-      // the run ends here. A run this job detached from keeps it for the
+      // The pod slot the run holds from the moment its pod is picked (taken
+      // with the pick, so runs picking at once never share one free slot);
+      // given back when the run ends here. A run this job detached from keeps it for the
       // instance that finishes it.
       let slotHeld = false;
       let ended: RunEnd | null = null;
@@ -564,6 +565,7 @@ export function startTaskWorker() {
               ownerUserId: runOwnerUserId,
               settings: task.settings,
               runId: task.id,
+              adapterEnv: agentConfig.env,
               ...(task.taskType === "coding" ? { controllerRunKind: "work-run" as const } : {}),
             },
             log,
@@ -728,9 +730,11 @@ export function startTaskWorker() {
             ownerUserId: runOwnerUserId,
             credentialProfile: workCredentialProfile(task),
             isolationPurpose: reviewOverride || task.taskType === "review" ? "review" : "work",
+            reserveSlot: true,
           },
         );
         repoPodId = pod.id;
+        slotHeld = true;
         log.info({ podName: pod.podName, instanceIndex: pod.instanceIndex }, "Repo pod ready");
 
         await taskService.updateTaskContainer(taskId, pod.podName ?? pod.podId ?? pod.id);
@@ -785,6 +789,7 @@ export function startTaskWorker() {
         startAttempted = true;
         const started = await repoPool.startTaskInRepoPod(pod, task.id, agentCommand, allEnv, {
           resetWorktree: shouldResetWorktree,
+          slotReserved: true,
           // Claude runs with `--input-format stream-json`: the first user
           // message arrives over stdin, which the start script primes from
           // this before the agent launches.
@@ -793,7 +798,6 @@ export function startTaskWorker() {
               ? buildInitialClaudeStreamMessage(allEnv.OPTIO_PROMPT ?? "")
               : "",
         });
-        slotHeld = true;
         if (started.output.trim()) {
           log.debug({ setup: started.output.slice(-2000) }, "Run setup output");
         }

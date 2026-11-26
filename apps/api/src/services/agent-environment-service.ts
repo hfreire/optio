@@ -35,6 +35,16 @@ import { buildMcpJsonContent, getMcpServersForTask, listMcpServers } from "./mcp
 import { buildSkillSetupFiles, getSkillsForTask, listSkills } from "./skill-service.js";
 import { getInstalledSkillsForTask, listInstalledSkills } from "./installed-skill-service.js";
 import { getRepoByUrl } from "./repo-service.js";
+import { getClaudeConfigSourceForRun, readClaudeConfigFiles } from "./claude-config-service.js";
+import {
+  applyClaudeConfig,
+  CLAUDE_CONFIG_ENV_KEYS_ENV,
+  CLAUDE_CONFIG_MANIFEST_ENV,
+  CLAUDE_CONFIG_REPORT_ENV,
+  claudeConfigManifestEnv,
+  isAuthEnvKey,
+  type ClaudeConfigFile,
+} from "./claude-config.js";
 import { retrieveSecretWithFallback } from "./secret-service.js";
 import { issueControllerToken } from "./controller-auth.js";
 import { canUse, type Actor } from "./ownership.js";
@@ -78,6 +88,8 @@ export interface AgentEnvironmentInput {
    * retry lands in the same place. A random name without one.
    */
   runId?: string | null;
+  /** The pod env the caller has built so far: the Claude config repo's `settings.json` never overrides these. */
+  adapterEnv?: Record<string, string>;
   /** Only trusted task / Job / persistent-agent workers opt into controller grants. */
   controllerOnly?: boolean;
   controllerRunKind?: "work-run" | "turn" | "session-turn";
@@ -433,6 +445,7 @@ export async function buildAgentEnvironment(
     setupFiles.push(...buildSkillSetupFiles(skills));
     log.info({ count: skills.length, agentType }, "Injecting custom skills");
   }
+  const loadedSkillNames = new Set<string>();
   if (installed.length > 0) {
     const { readInstalledSkillFiles } = await import("../workers/skill-sync-worker.js");
     let injected = 0;
@@ -449,6 +462,7 @@ export async function buildAgentEnvironment(
           });
         }
         injected++;
+        loadedSkillNames.add(skill.name);
       } catch (err) {
         log.warn(
           { err, skillId: skill.id, name: skill.name },
@@ -457,6 +471,10 @@ export async function buildAgentEnvironment(
       }
     }
     log.info({ injected, total: installed.length }, "Injecting marketplace skills");
+  }
+
+  if (agentType === "claude-code" && !input.controllerOnly) {
+    await applyClaudeConfigRepo(input, setupFiles, loadedSkillNames, env, log);
   }
 
   if (agentType === "pi") {
@@ -478,6 +496,54 @@ export async function buildAgentEnvironment(
     env.OPTIO_SETUP_FILES = Buffer.from(JSON.stringify(setupFiles)).toString("base64");
   }
   return env;
+}
+
+/**
+ * Writes the Claude config repo for this work (its repo's, else the
+ * workspace's) into `setupFiles` and sets the env that logs, in the run's
+ * output, what the pod is missing for its hooks. A source whose files cannot
+ * be read is skipped with a warning, never failing the run; the pod then
+ * keeps what it has. With no source the manifest is empty, which removes the
+ * files an earlier run injected.
+ */
+async function applyClaudeConfigRepo(
+  input: AgentEnvironmentInput,
+  setupFiles: SetupFile[],
+  installedSkillNames: ReadonlySet<string>,
+  env: Record<string, string>,
+  log: Log,
+): Promise<void> {
+  const source = await getClaudeConfigSourceForRun(input.repoUrl, input.workspaceId);
+  if (!source) {
+    env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv([]);
+    return;
+  }
+  let files: ClaudeConfigFile[];
+  try {
+    files = await readClaudeConfigFiles(source.id, source.resolvedSha);
+  } catch (err) {
+    log.warn({ err, sourceId: source.id }, "Skipping the Claude config repo: files unreadable");
+    return;
+  }
+  const applied = applyClaudeConfig(
+    setupFiles,
+    files,
+    installedSkillNames,
+    (key) =>
+      key in (input.adapterEnv ?? {}) ||
+      key in env ||
+      isReservedPodEnvName(key) ||
+      isAuthEnvKey(key),
+  );
+  setupFiles.splice(0, setupFiles.length, ...applied.setupFiles);
+  env[CLAUDE_CONFIG_MANIFEST_ENV] = claudeConfigManifestEnv(applied.manifest);
+  if (applied.envKeys.length > 0) {
+    env[CLAUDE_CONFIG_ENV_KEYS_ENV] = Buffer.from(JSON.stringify(applied.envKeys)).toString(
+      "base64",
+    );
+  }
+  if (applied.report) env[CLAUDE_CONFIG_REPORT_ENV] = applied.report;
+  log.info({ sourceId: source.id, sha: source.resolvedSha }, "Injecting the Claude config repo");
 }
 
 /**

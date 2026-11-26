@@ -18,6 +18,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "../db/client.js";
 import { optioActions, secrets, users } from "../db/schema.js";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
+import { createClaudeConfigSource } from "./claude-config-service.js";
 import { createConnection, seedBuiltInProviders } from "./connection-service.js";
 import { ENCRYPTED_COLUMNS, STORED_TOKENS, readSealedRows } from "./encrypted-columns.js";
 import { rotateEncryptionKey, verifyEncryptionKey } from "./encryption-key-rotation.js";
@@ -149,6 +150,10 @@ beforeAll(async () => {
   });
   await updateRepo(repo.id, { slackWebhookUrl: "https://chat.example.com/hooks/T1" });
   await saveSignInConfig("google", { clientId: "db-id", clientSecret: "db-secret" }, null);
+  await createClaudeConfigSource(
+    { sourceUrl: "https://bot:dot-tok-1@git.example.test/acme/dot.git" },
+    ws.id,
+  );
   await createRemoteWorkspaceConnection(
     {
       provider: "coder",

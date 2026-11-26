@@ -79,7 +79,23 @@ export function isReservedPodEnvName(name: string): boolean {
 }
 
 /**
- * Build `export KEY='value'` script lines for every env entry.
+ * Env entries a start script assigns but does not export. The setup files
+ * are megabytes with a large skill, and one environment string is at most
+ * 128 KiB: exported, every command the script ran afterwards (and the
+ * agent) failed with "Argument list too long". Their one reader is
+ * `WRITE_SETUP_FILES`, in the script's own shell.
+ */
+const SHELL_ONLY_ENV_NAMES: ReadonlySet<string> = new Set([
+  "OPTIO_SETUP_FILES",
+  "OPTIO_CLAUDE_CONFIG_MANIFEST",
+  "OPTIO_CLAUDE_CONFIG_REPORT",
+  "OPTIO_CLAUDE_CONFIG_ENV_KEYS",
+]);
+
+/**
+ * Build `export KEY='value'` script lines for every env entry
+ * (`export -n KEY='value'` — assigned, never in a child's environment — for
+ * `SHELL_ONLY_ENV_NAMES`).
  * Throws on names bash would reject as identifiers — interpolating an
  * arbitrary name into `export <name>=` would otherwise allow injection.
  */
@@ -88,9 +104,125 @@ export function buildEnvExports(env: Record<string, string>): string[] {
     if (!VALID_ENV_NAME.test(key)) {
       throw new Error(`Invalid environment variable name for pod exec: ${JSON.stringify(key)}`);
     }
-    return `export ${key}=${shellQuote(String(value))}`;
+    const exportIt = SHELL_ONLY_ENV_NAMES.has(key) ? "export -n" : "export";
+    return `${exportIt} ${key}=${shellQuote(String(value))}`;
   });
 }
+
+/**
+ * Script lines that make `~/.claude` hold exactly the Claude config repo's
+ * files from the last run (`OPTIO_CLAUDE_CONFIG_MANIFEST`: base64 JSON
+ * `{ paths }`, relative to `~/.claude`). Files the previous run's manifest
+ * listed and this one doesn't are deleted; nothing else under `~/.claude`
+ * is touched, and a path that leaves it or names the manifest is ignored. Run before the
+ * setup files are written.
+ * Without the env (no Claude Code, or a config that couldn't be read) nothing
+ * changes.
+ */
+export const PRUNE_CLAUDE_CONFIG: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_MANIFEST:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_MANIFEST}" | base64 -d | python3 -c "`,
+  `import json, os, sys`,
+  `home = os.path.normpath(os.environ.get('OPTIO_CLAUDE_HOME') or '/home/agent/.claude')`,
+  `mf = os.path.join(home, '.optio-config-manifest')`,
+  `new = [p for p in json.load(sys.stdin).get('paths', []) if isinstance(p, str)]`,
+  `try:`,
+  `    with open(mf) as fh:`,
+  `        old = json.load(fh)`,
+  `except (OSError, ValueError):`,
+  `    old = []`,
+  `if not isinstance(old, list):`,
+  `    old = []`,
+  `removed = 0`,
+  `for rel in old:`,
+  `    if not isinstance(rel, str) or rel in new or os.path.isabs(rel):`,
+  `        continue`,
+  `    target = os.path.normpath(os.path.join(home, rel))`,
+  `    if not target.startswith(home + os.sep) or target == mf:`,
+  `        continue`,
+  `    if os.path.islink(target) or os.path.isfile(target):`,
+  `        try:`,
+  `            os.remove(target)`,
+  `        except FileNotFoundError:`,
+  `            continue`,
+  `        removed += 1`,
+  `        parent = os.path.dirname(target)`,
+  `        while parent != home and parent.startswith(home + os.sep):`,
+  `            try:`,
+  `                os.rmdir(parent)`,
+  `            except OSError:`,
+  `                break`,
+  `            parent = os.path.dirname(parent)`,
+  `if removed:`,
+  `    print('[optio] Removed ' + str(removed) + ' file(s) the Claude config repo no longer has')`,
+  `if new:`,
+  `    os.makedirs(home, exist_ok=True)`,
+  `    tmp = mf + '.' + str(os.getpid())`,
+  `    with open(tmp, 'w') as fh:`,
+  `        json.dump(new, fh)`,
+  `    os.replace(tmp, mf)`,
+  `else:`,
+  `    try:`,
+  `        os.remove(mf)`,
+  `    except FileNotFoundError:`,
+  `        pass`,
+  `"`,
+  `fi`,
+];
+
+/**
+ * Script lines that log the Claude config repo's notes
+ * (`OPTIO_CLAUDE_CONFIG_REPORT`) and each hook command whose executable
+ * doesn't resolve in this pod.
+ */
+export const REPORT_CLAUDE_CONFIG: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_REPORT:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_REPORT}" | base64 -d | python3 -c "`,
+  `import json, os, shutil, sys`,
+  `report = json.load(sys.stdin)`,
+  `for note in report.get('notes', []):`,
+  `    print('[optio] ' + note)`,
+  `for hook in report.get('executables', []):`,
+  `    exe = os.path.expanduser(os.path.expandvars(hook['exe']))`,
+  `    if chr(36) in exe:`,
+  `        continue`,
+  `    found = os.access(exe, os.X_OK) if '/' in exe else shutil.which(exe) is not None`,
+  `    if not found:`,
+  `        print('[optio] Warning: ' + hook['event'] + ' hook runs ' + hook['exe'] + ', which is not in this pod')`,
+  `"`,
+  `fi`,
+];
+
+/**
+ * Script lines that drop, from the written `settings.json`, each `env` key
+ * the Claude config repo set (`OPTIO_CLAUDE_CONFIG_ENV_KEYS`: base64 JSON
+ * list) that this process's env already has. Claude Code lets `settings.json`
+ * `env` override the process env, and the env a run builds is only complete
+ * here, whichever path built it.
+ */
+export const FILTER_CLAUDE_CONFIG_ENV: readonly string[] = [
+  `if [ -n "\${OPTIO_CLAUDE_CONFIG_ENV_KEYS:-}" ]; then`,
+  `  echo "\${OPTIO_CLAUDE_CONFIG_ENV_KEYS}" | base64 -d | python3 -c "`,
+  `import json, os, sys`,
+  `home = os.path.normpath(os.environ.get('OPTIO_CLAUDE_HOME') or '/home/agent/.claude')`,
+  `path = os.path.join(home, 'settings.json')`,
+  `keys = [k for k in json.load(sys.stdin) if isinstance(k, str)]`,
+  `try:`,
+  `    with open(path) as fh:`,
+  `        settings = json.load(fh)`,
+  `except (OSError, ValueError):`,
+  `    sys.exit(0)`,
+  `env = settings.get('env')`,
+  `if isinstance(env, dict):`,
+  `    dropped = [k for k in keys if k in env and k in os.environ]`,
+  `    for k in dropped:`,
+  `        del env[k]`,
+  `    if dropped:`,
+  `        with open(path, 'w') as fh:`,
+  `            json.dump(settings, fh)`,
+  `"`,
+  `fi`,
+];
 
 /**
  * Script lines that write the run's setup files (`OPTIO_SETUP_FILES`: base64
@@ -106,6 +238,8 @@ export function buildEnvExports(env: Record<string, string>): string[] {
  * `.mcp.json` and skills a Repo Task does.
  */
 export const WRITE_SETUP_FILES: readonly string[] = [
+  // Before the writes: a settings.json it removes is then rewritten by an adapter run.
+  ...PRUNE_CLAUDE_CONFIG,
   `if [ -n "\${OPTIO_SETUP_FILES:-}" ]; then`,
   `  echo "[optio] Writing setup files..."`,
   `  echo "\${OPTIO_SETUP_FILES}" | base64 -d | python3 -c "`,
@@ -160,6 +294,8 @@ export const WRITE_SETUP_FILES: readonly string[] = [
   `        subprocess.run(['git', 'update-index', '--skip-worktree', '--'] + tracked, capture_output=True)`,
   `"`,
   `fi`,
+  ...FILTER_CLAUDE_CONFIG_ENV,
+  ...REPORT_CLAUDE_CONFIG,
 ];
 
 /**

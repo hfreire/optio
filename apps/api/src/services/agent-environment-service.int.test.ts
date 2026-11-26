@@ -7,7 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { claudeConfigFiles, installedSkills, users } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { insertWorkspace } from "../test-utils/integration/fixtures.js";
 import {
   buildAgentEnvironment,
@@ -18,6 +19,8 @@ import { logger } from "../logger.js";
 import { createConnection, seedBuiltInProviders, updateConnection } from "./connection-service.js";
 import { createMcpServer } from "./mcp-server-service.js";
 import { createSkill } from "./skill-service.js";
+import { createInstalledSkill } from "./installed-skill-service.js";
+import { createClaudeConfigSource, recordClaudeConfigSync } from "./claude-config-service.js";
 
 const uniq = () => randomBytes(4).toString("hex");
 
@@ -89,7 +92,7 @@ async function world() {
 
 type Env = Record<string, string>;
 /** The setup files a pod would write, decoded from `OPTIO_SETUP_FILES`. */
-const filesOf = (env: Env): { path: string; content: string }[] =>
+const filesOf = (env: Env): { path: string; content: string; contentBase64?: string }[] =>
   env.OPTIO_SETUP_FILES
     ? JSON.parse(Buffer.from(env.OPTIO_SETUP_FILES, "base64").toString("utf8"))
     : [];
@@ -101,6 +104,8 @@ const skillPaths = (env: Env) =>
   filesOf(env)
     .filter((f) => f.path.startsWith(".claude/"))
     .map((f) => f.path);
+const manifestOf = (env: Env): string[] =>
+  JSON.parse(Buffer.from(env.OPTIO_CLAUDE_CONFIG_MANIFEST, "base64").toString("utf8")).paths;
 const build = (input: Parameters<typeof buildAgentEnvironment>[0]) =>
   buildAgentEnvironment(input, logger);
 
@@ -508,5 +513,182 @@ describe("environmentOptions", () => {
       ownerUserId: w.owner.id,
     });
     expect(mine.connections.map((c) => c.name)).toContain("mine");
+  });
+
+  describe("Claude config repo", () => {
+    const configFiles = [
+      { relativePath: "CLAUDE.md", content: Buffer.from("rules"), executable: false },
+      { relativePath: "hooks/guard", content: Buffer.from("#!/bin/sh"), executable: false },
+      {
+        relativePath: "settings.json",
+        content: Buffer.from(
+          JSON.stringify({
+            model: "haiku",
+            attribution: { commit: "" },
+            env: { MINE: "1", ANTHROPIC_API_KEY: "evil", OPTIO_X: "no" },
+            hooks: { Stop: [{ hooks: [{ type: "command", command: "optio-missing-tool run" }] }] },
+          }),
+        ),
+        executable: false,
+      },
+    ];
+    const adapterSettings = {
+      path: "/home/agent/.claude/settings.json",
+      content: JSON.stringify({ hasCompletedOnboarding: true, model: "opus", env: { A: "1" } }),
+    };
+
+    async function synced(workspaceId: string, repoUrl?: string, files = configFiles) {
+      const row = await createClaudeConfigSource(
+        { sourceUrl: "https://github.com/acme/dotclaude", repoUrl },
+        workspaceId,
+      );
+      await recordClaudeConfigSync(
+        row.id,
+        { ok: true, resolvedSha: "b".repeat(40), totalSizeBytes: 1, files },
+        { sourceUrl: row.sourceUrl, encryptedSourceUrl: null, ref: row.ref, subpath: row.subpath },
+      );
+      return row;
+    }
+    const input = (
+      w: Awaited<ReturnType<typeof world>>,
+      agentType: string | null = "claude-code",
+    ) => ({
+      repoUrl: w.repoUrl,
+      agentType,
+      workspaceId: w.ws.id,
+      ownerUserId: null,
+      adapterEnv: { A: "1" },
+    });
+
+    it("leaves a run with no config exactly as it was", async () => {
+      const w = await world();
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(env.OPTIO_CLAUDE_CONFIG_REPORT).toBeUndefined();
+      expect(manifestOf(env)).toEqual([]);
+      expect(filesOf(env).filter((f) => f.path.startsWith("/home/agent/.claude/"))).toEqual([
+        adapterSettings,
+      ]);
+    });
+
+    it("lets the config's model through when the adapter sets none", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const bare = {
+        path: adapterSettings.path,
+        content: JSON.stringify({ hasCompletedOnboarding: true }),
+      };
+      const env = await buildAgentEnvironment(input(w), logger, [bare]);
+      const merged = JSON.parse(filesOf(env).find((f) => f.path === adapterSettings.path)!.content);
+      expect(merged.model).toBe("haiku");
+    });
+
+    it("keeps the config's skill when the installed skill of that name failed to load", async () => {
+      const w = await world();
+      await synced(w.ws.id, undefined, [
+        { relativePath: "skills/tdd/SKILL.md", content: Buffer.from("cfg"), executable: false },
+      ]);
+      const skill = await createInstalledSkill(
+        { name: "tdd", sourceUrl: "https://github.com/acme/skills" },
+        w.ws.id,
+      );
+      await db
+        .update(installedSkills)
+        .set({ resolvedSha: "c".repeat(40) })
+        .where(eq(installedSkills.id, skill.id));
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(manifestOf(env)).toContain("skills/tdd/SKILL.md");
+      expect(env.OPTIO_CLAUDE_CONFIG_REPORT ?? "").not.toContain("installed skill");
+    });
+
+    it("lists what it injects, so the pod can prune what a later config drops", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(manifestOf(env)).toEqual(["CLAUDE.md", "hooks/guard"]);
+    });
+
+    it("leaves the pod's files alone when the config cannot be read, and skips other agents", async () => {
+      const w = await world();
+      const row = await synced(w.ws.id);
+      await db.delete(claudeConfigFiles).where(eq(claudeConfigFiles.sourceId, row.id));
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(env.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
+      const codex = await buildAgentEnvironment(input(w, "codex"), logger, []);
+      expect(codex.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
+    });
+
+    it("injects the files, merges settings under the adapter's, and reports missing hooks", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      const files = filesOf(env);
+      const claudeMd = files.find((f) => f.path === "/home/agent/.claude/CLAUDE.md");
+      expect(Buffer.from(claudeMd!.contentBase64!, "base64").toString()).toBe("rules");
+      expect(files.find((f) => f.path === "/home/agent/.claude/hooks/guard")).toMatchObject({
+        executable: true,
+      });
+      const merged = JSON.parse(
+        files.find((f) => f.path === "/home/agent/.claude/settings.json")!.content,
+      );
+      expect(merged).toMatchObject({
+        hasCompletedOnboarding: true,
+        model: "opus",
+        attribution: { commit: "" },
+        env: { A: "1", MINE: "1" },
+      });
+      expect(merged.env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(merged.env.OPTIO_X).toBeUndefined();
+      const report = JSON.parse(Buffer.from(env.OPTIO_CLAUDE_CONFIG_REPORT, "base64").toString());
+      expect(report.executables).toEqual([{ event: "Stop", exe: "optio-missing-tool" }]);
+    });
+
+    it("never lets settings env override a pod env the caller already built", async () => {
+      const w = await world();
+      const settings = {
+        relativePath: "settings.json",
+        content: Buffer.from(JSON.stringify({ env: { GH_TOKEN: "evil", MINE: "1" } })),
+        executable: false,
+      };
+      await synced(w.ws.id, undefined, [settings]);
+      const env = await buildAgentEnvironment(
+        { ...input(w), adapterEnv: { GH_TOKEN: "real" } },
+        logger,
+        [],
+      );
+      const written = JSON.parse(
+        filesOf(env).find((f) => f.path === "/home/agent/.claude/settings.json")!.content,
+      );
+      expect(written.env).toEqual({ MINE: "1" });
+      expect(
+        JSON.parse(Buffer.from(env.OPTIO_CLAUDE_CONFIG_ENV_KEYS, "base64").toString()),
+      ).toEqual(["MINE"]);
+    });
+
+    it("prefers the repo's source over the workspace's", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const repoFiles = [{ ...configFiles[0], relativePath: "REPO.md" }];
+      const repoRow = await synced(w.ws.id, w.repoUrl, repoFiles);
+      expect(repoRow.repoUrl).toBe(w.repoUrl);
+      const env = await buildAgentEnvironment(input(w), logger, [adapterSettings]);
+      expect(manifestOf(env)).toEqual(["REPO.md"]);
+    });
+
+    it("skips other agents and controller-only work", async () => {
+      const w = await world();
+      await synced(w.ws.id);
+      const codex = await buildAgentEnvironment(input(w, "codex"), logger, []);
+      expect(codex.OPTIO_CLAUDE_CONFIG_REPORT).toBeUndefined();
+      expect(filesOf(codex).some((f) => f.path.startsWith("/home/agent/.claude/"))).toBe(false);
+      const controller = await buildAgentEnvironment(
+        { ...input(w), controllerOnly: true },
+        logger,
+        [],
+      );
+      expect(controller.OPTIO_CLAUDE_CONFIG_MANIFEST).toBeUndefined();
+      expect(filesOf(controller).some((f) => f.path.startsWith("/home/agent/.claude/"))).toBe(
+        false,
+      );
+    });
   });
 });

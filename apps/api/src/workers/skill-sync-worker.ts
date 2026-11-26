@@ -32,6 +32,7 @@ import { parseIntEnv } from "@optio/shared";
 import type { InstalledSkillManifest } from "@optio/shared";
 import { logger } from "../logger.js";
 import { formatSkillSyncError, redactSkillSource } from "../utils/skill-sync-error.js";
+import { assertGitSourceAllowed, gitFileSourcesAllowed } from "../utils/git-source-url.js";
 import { getBullMQOptions } from "../services/redis-config.js";
 import { scheduleRepeat } from "../services/repeat-jobs.js";
 import { underPollerLease } from "../services/poller-lease.js";
@@ -308,10 +309,7 @@ const GIT_ENV_ALLOWLIST = [
  * GIT_ENV_ALLOWLIST.
  */
 export function skillGitEnv(): NodeJS.ProcessEnv {
-  const allowFile =
-    process.env.OPTIO_SKILL_ALLOW_FILE_SOURCES === "1" ||
-    process.env.OPTIO_RUNTIME === "fake" ||
-    !!process.env.VITEST;
+  const allowFile = gitFileSourcesAllowed();
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
@@ -322,8 +320,14 @@ export function skillGitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<string> {
+export async function resolveRefToSha(
+  sourceUrl: string,
+  ref: string,
+  opts: { strict?: { defaultRef: string } } = {},
+): Promise<string> {
   assertSkillSourceArgs(sourceUrl, ref);
+  await assertGitSourceAllowed(sourceUrl);
+  if (opts.strict && /^[0-9a-f]{40}$/.test(ref)) return ref;
   // ls-remote returns "<sha>\trefs/heads/<branch>" lines. We try the requested
   // ref directly and fall back to bare HEAD if the ref doesn't exist.
   const { stdout } = await execFileP(
@@ -335,6 +339,9 @@ export async function resolveRefToSha(sourceUrl: string, ref: string): Promise<s
   if (line) {
     const sha = line.split(/\s+/)[0];
     if (/^[0-9a-f]{40}$/.test(sha)) return sha;
+  }
+  if (opts.strict && ref !== "" && ref !== "HEAD" && ref !== opts.strict.defaultRef) {
+    throw new Error(`ref '${ref}' not found in ${redactSkillSource(sourceUrl)}`);
   }
   // Fallback: ls-remote with no ref returns HEAD.
   const head = await execFileP("git", ["ls-remote", "--", sourceUrl, "HEAD"], {
@@ -356,8 +363,10 @@ export async function cloneIntoScratch(
   sourceUrl: string,
   sha: string,
   log: { info: (...args: unknown[]) => void },
+  opts: { exact?: boolean } = {},
 ): Promise<string> {
   assertSkillSourceArgs(sourceUrl, "");
+  await assertGitSourceAllowed(sourceUrl);
   await fs.mkdir(scratchDir(), { recursive: true });
   const tmpRoot = await fs.mkdtemp(path.join(scratchDir(), "skill-"));
   const tmpClone = path.join(tmpRoot, "clone");
@@ -379,7 +388,8 @@ export async function cloneIntoScratch(
         timeout: CLONE_TIMEOUT_MS,
         env: skillGitEnv(),
       });
-    } catch {
+    } catch (err) {
+      if (opts.exact) throw err;
       // If fetch-by-sha is unsupported (older servers) the depth-1 clone of
       // the resolved branch should already be at the right SHA.
     }
