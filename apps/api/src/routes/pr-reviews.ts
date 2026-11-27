@@ -13,6 +13,11 @@ import { normalizeRepoUrl, parsePrUrl } from "@optio/shared";
 import { requireRole } from "../plugins/auth.js";
 import { getRepoByUrl } from "../services/repo-service.js";
 import { listLogs } from "../services/run-log-service.js";
+import {
+  MAX_THREAD_ACTIONS,
+  ThreadActionsNotAppliedError,
+  threadActionShape,
+} from "../services/pr-review-thread-actions.js";
 import * as prReviewService from "../services/pr-review-service.js";
 import { logger } from "../logger.js";
 import { logAction } from "../services/optio-action-service.js";
@@ -30,6 +35,29 @@ const createReviewSchema = z
     prUrl: z.string().min(1).describe("URL of the PR to review"),
   })
   .describe("Body for launching a PR review");
+
+const ThreadActionSchema = threadActionShape.describe("An action on an existing review thread");
+
+const ThreadActionResponseSchema = threadActionShape.extend({
+  replied: z.boolean().optional().describe("The reply was posted"),
+  resolved: z.boolean().optional().describe("The thread was resolved"),
+  refused: z.boolean().optional().describe("Refused on submit and never retried"),
+  authorMismatch: z.boolean().optional().describe("Thread author is not an account Optio posts as"),
+});
+
+const SubmitErrorSchema = ErrorResponseSchema.extend({
+  threadActionResults: z
+    .array(
+      z.object({
+        threadId: z.string(),
+        action: z.string(),
+        status: z.enum(["done", "failed", "skipped"]),
+        error: z.string().optional(),
+        errorKind: z.enum(["rate_limit", "auth", "transient"]).optional(),
+      }),
+    )
+    .optional(),
+});
 
 const updateReviewSchema = z
   .object({
@@ -52,6 +80,11 @@ const updateReviewSchema = z
       )
       .nullable()
       .optional(),
+    threadActions: z
+      .array(ThreadActionSchema)
+      .max(MAX_THREAD_ACTIONS)
+      .optional()
+      .describe("Replies and resolves on existing review threads, run on submit"),
   })
   .describe("Partial update to a review draft");
 
@@ -87,6 +120,7 @@ const PrReviewSchema = z
     verdict: z.string().nullable(),
     summary: z.string().nullable(),
     fileComments: z.array(z.record(z.unknown())).nullable(),
+    threadActions: z.array(ThreadActionResponseSchema).optional(),
     origin: z.string(),
     userEngaged: z.boolean(),
     autoSubmitted: z.boolean(),
@@ -351,7 +385,7 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         params: IdParamsSchema,
         response: {
           200: GenericResultSchema,
-          400: ErrorResponseSchema,
+          400: SubmitErrorSchema,
           404: ErrorResponseSchema,
         },
       },
@@ -363,7 +397,12 @@ export async function prReviewRoutes(rawApp: FastifyInstance) {
         reply.send(result);
       } catch (err: unknown) {
         logger.warn({ err, prReviewId: req.params.id }, "Failed to submit PR review");
-        reply.status(400).send({ error: err instanceof Error ? err.message : String(err) });
+        reply.status(400).send({
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof ThreadActionsNotAppliedError
+            ? { threadActionResults: err.results }
+            : {}),
+        });
       }
     },
   );
