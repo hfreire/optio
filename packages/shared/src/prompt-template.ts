@@ -282,7 +282,9 @@ export const DEFAULT_PR_REVIEW_PROMPT_TEMPLATE = `You are a code review assistan
    }
    OPTIO_REVIEW_EOF
    \`\`\`
-
+{{#if THREADS_ONLY}}
+   This run only follows up on replies to earlier review threads; it is not a new review. Write \`"summary": ""\` and \`"fileComments": []\`.
+{{/if}}
 ## Output Format
 
 - \`verdict\` must be exactly one of: \`"approve"\`, \`"request_changes"\`, or \`"comment"\`

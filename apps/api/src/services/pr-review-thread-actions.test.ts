@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import { GitHubApiError } from "./git-platform/github.js";
-import type { GitPlatform, PrReviewThreadAction, RepoIdentifier } from "@optio/shared";
+import type {
+  GitPlatform,
+  PrReviewThreadAction,
+  RepoIdentifier,
+  ReviewThreadInfo,
+} from "@optio/shared";
 import {
   parseThreadActions,
   runThreadActions,
@@ -13,6 +18,12 @@ import {
   threadActionSchema,
   validateThreadActions,
   ThreadActionValidationError,
+  parseHeldThreads,
+  threadsAwaitingFollowUp,
+  threadWatermarks,
+  mergeHeldThreads,
+  dropActionsOnHeldThreads,
+  releaseHeldThreads,
 } from "./pr-review-thread-actions.js";
 
 const warn = vi.fn();
@@ -645,5 +656,169 @@ describe("awaitsPerson", () => {
     expect(
       awaitsPerson(draft([reply], { b: { fp: threadActionFingerprint(reply), refused: true } })),
     ).toBe(true);
+  });
+});
+
+describe("parseHeldThreads", () => {
+  it("is null when the draft has no heldThreads field", () => {
+    expect(parseHeldThreads(undefined, log)).toBeNull();
+    expect(parseHeldThreads("x", log)).toBeNull();
+  });
+
+  it("keeps valid entries and drops invalid or duplicate ones", () => {
+    warn.mockClear();
+    expect(
+      parseHeldThreads(
+        [
+          { threadId: "T1", commentId: 5, reason: "reply_cap", extra: 1 },
+          { threadId: "T2", commentId: 6, reason: "bored" },
+          { threadId: "T3", commentId: "7", reason: "unsure" },
+          { threadId: "T1", commentId: 5, reason: "unsure" },
+          { threadId: "T4", commentId: 8, reason: "truncated" },
+        ],
+        log,
+      ),
+    ).toEqual([
+      { threadId: "T1", commentId: 5, reason: "reply_cap" },
+      { threadId: "T4", commentId: 8, reason: "truncated" },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+
+  it("caps the list like thread actions", () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({
+      threadId: `T${i}`,
+      commentId: i + 1,
+      reason: "unsure",
+    }));
+    expect(parseHeldThreads(many, log)).toHaveLength(100);
+  });
+});
+
+describe("threadsAwaitingFollowUp", () => {
+  const ours: ReviewThreadInfo = {
+    threadId: "T",
+    firstCommentId: 10,
+    firstCommentAuthor: "optio-bot",
+    firstCommentReviewId: 900,
+    lastCommentId: 12,
+    lastCommentAuthor: "alice",
+    isResolved: false,
+  };
+  const pick = (over: Partial<ReviewThreadInfo>, marks: Record<string, number> = {}) =>
+    threadsAwaitingFollowUp(
+      { viewerLogin: "optio-bot[bot]", threads: [{ ...ours, ...over }] },
+      [900],
+      marks,
+    ).map((t) => t.threadId);
+
+  it("picks an unresolved thread Optio started where the author replied", () => {
+    expect(pick({})).toEqual(["T"]);
+  });
+
+  it("skips a thread whose last comment is Optio's own", () => {
+    expect(pick({ lastCommentAuthor: "optio-bot" })).toEqual([]);
+  });
+
+  it("skips a resolved thread", () => {
+    expect(pick({ isResolved: true })).toEqual([]);
+  });
+
+  it("skips a thread someone else started", () => {
+    expect(pick({ firstCommentReviewId: 901 })).toEqual([]);
+    expect(pick({ firstCommentReviewId: null })).toEqual([]);
+  });
+
+  it("skips a thread with no reply", () => {
+    expect(pick({ lastCommentId: 10, lastCommentAuthor: "alice" })).toEqual([]);
+  });
+
+  it("skips a reply already handled, picks a newer one", () => {
+    expect(pick({}, { T: 12 })).toEqual([]);
+    expect(pick({ lastCommentId: 13 }, { T: 12 })).toEqual(["T"]);
+  });
+
+  it("skips threads the platform reports without their last comment", () => {
+    expect(pick({ lastCommentId: undefined, isResolved: undefined })).toEqual([]);
+  });
+});
+
+describe("threadWatermarks", () => {
+  it("maps each thread Optio started to its last comment", () => {
+    expect(
+      threadWatermarks(
+        {
+          viewerLogin: "optio-bot",
+          threads: [
+            {
+              threadId: "A",
+              firstCommentId: 1,
+              firstCommentAuthor: "x",
+              firstCommentReviewId: 900,
+              lastCommentId: 4,
+            },
+            {
+              threadId: "B",
+              firstCommentId: 2,
+              firstCommentAuthor: "x",
+              firstCommentReviewId: 7,
+              lastCommentId: 5,
+            },
+            {
+              threadId: "C",
+              firstCommentId: 3,
+              firstCommentAuthor: "x",
+              firstCommentReviewId: 900,
+            },
+          ],
+        },
+        [900],
+      ),
+    ).toEqual({ A: 4 });
+  });
+});
+
+describe("held threads stay held", () => {
+  const a = { threadId: "A", commentId: 1, reason: "unsure" as const };
+  const b = { threadId: "B", commentId: 2, reason: "reply_cap" as const };
+
+  it("keeps earlier holds when a later draft omits them, the earlier entry winning", () => {
+    expect(mergeHeldThreads([a], [b])).toEqual([a, b]);
+    expect(mergeHeldThreads([a], [{ ...a, reason: "truncated" }])).toEqual([a]);
+    expect(mergeHeldThreads([a], null)).toEqual([a]);
+    expect(mergeHeldThreads([], null)).toEqual([]);
+  });
+
+  it("drops drafted actions on a thread that was already held", () => {
+    warn.mockClear();
+    const actions: PrReviewThreadAction[] = [
+      { threadId: "A", commentId: 1, action: "reply", body: "No" },
+      { threadId: "B", commentId: 2, action: "reply", body: "Done" },
+    ];
+    expect(dropActionsOnHeldThreads(actions, [a], log).map((x) => x.threadId)).toEqual(["B"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  const thread = (over: Partial<ReviewThreadInfo>): ReviewThreadInfo => ({
+    threadId: "A",
+    firstCommentId: 1,
+    firstCommentAuthor: "optio-bot",
+    firstCommentReviewId: 900,
+    lastCommentId: 5,
+    lastCommentAuthor: "alice",
+    isResolved: false,
+    ...over,
+  });
+  const release = (threads: ReviewThreadInfo[]) =>
+    releaseHeldThreads([a], { viewerLogin: "optio-bot[bot]", threads }).map((t) => t.threadId);
+
+  it("keeps a hold while the author has the last word", () => {
+    expect(release([thread({})])).toEqual(["A"]);
+  });
+
+  it("releases a hold once a person engages", () => {
+    expect(release([thread({ isResolved: true })])).toEqual([]);
+    expect(release([thread({ lastCommentAuthor: "optio-bot" })])).toEqual([]);
+    expect(release([])).toEqual([]);
   });
 });

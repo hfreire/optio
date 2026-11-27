@@ -93,7 +93,7 @@ describe("notification-service", () => {
       expect(DEFAULT_PREFERENCES["task.commented"].push).toBe(false);
     });
 
-    it("covers all 11 expected event types", () => {
+    it("covers all 12 expected event types", () => {
       const eventTypes = Object.keys(DEFAULT_PREFERENCES);
       expect(eventTypes).toContain("task.pr_opened");
       expect(eventTypes).toContain("task.completed");
@@ -106,7 +106,8 @@ describe("notification-service", () => {
       expect(eventTypes).toContain("local.host_offline");
       expect(eventTypes).toContain("agent.turn_completed");
       expect(eventTypes).toContain("agent.failed");
-      expect(eventTypes).toHaveLength(11);
+      expect(eventTypes).toContain("review.needs_you");
+      expect(eventTypes).toHaveLength(12);
     });
 
     it("each preference has a push boolean field", () => {

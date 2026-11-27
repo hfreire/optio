@@ -586,12 +586,7 @@ export function startPrReviewWorker() {
           () => null,
         );
         if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
-          await prReviewService
-            .transitionPrReview(run.prReviewId, PrReviewState.FAILED, "worker_exception", {
-              message: msg,
-              runId,
-            })
-            .catch(() => {});
+          await prReviewService.failReviewForRun(run, "worker_exception", msg).catch(() => {});
         }
       } finally {
         // Let go of the run: an agent this job started and left behind (a
@@ -868,10 +863,7 @@ async function finishReviewRun(input: FinishReviewRunInput): Promise<RunEnd> {
     // review. Only initial/rereview runs flip the parent to FAILED — and
     // never a cancelled one (the cancel is what stopped its agent).
     if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
-      await prReviewService.transitionPrReview(run.prReviewId, PrReviewState.FAILED, "run_failed", {
-        message: result.error ?? "Agent run failed",
-        runId,
-      });
+      await prReviewService.failReviewForRun(run, "run_failed", result.error ?? "Agent run failed");
     }
   }
 
@@ -905,12 +897,7 @@ async function failLostReviewRun(
   const msg = withStderr(`${detail}. Inspect before relaunching.`, stderrTail);
   await transitionRunFromActive(run.id, PrReviewRunState.FAILED, { errorMessage: msg });
   if (run.kind !== "chat" && !(await reviewIsCancelled(run.prReviewId))) {
-    await prReviewService
-      .transitionPrReview(run.prReviewId, PrReviewState.FAILED, trigger, {
-        message: msg,
-        runId: run.id,
-      })
-      .catch(() => {});
+    await prReviewService.failReviewForRun(run, trigger, msg).catch(() => {});
   }
   await enqueueReconcile(
     { kind: "pr-review", id: run.prReviewId },

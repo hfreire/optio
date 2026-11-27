@@ -1588,6 +1588,9 @@ data class ReviewThreadInfo(
     val firstCommentAuthor: String? = null,
     /** GitHub review the first comment belongs to, to recognise Optio's own inline comments. */
     val firstCommentReviewId: Double? = null,
+    val lastCommentId: Double? = null,
+    val lastCommentAuthor: String? = null,
+    val isResolved: Boolean? = null,
 )
 
 // endregion
@@ -3601,11 +3604,34 @@ enum class PrReviewRunKind(override val raw: String) : RawEnum {
     INITIAL("initial"),
     REREVIEW("rereview"),
     CHAT("chat"),
+    THREADS_ONLY("threads-only"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 
     companion object : RawEnumSerializer<PrReviewRunKind>("dev.optio.core.model.PrReviewRunKind", entries, UNKNOWN)
 }
+
+@Serializable(with = PrReviewHeldThreadReason.Companion::class)
+enum class PrReviewHeldThreadReason(override val raw: String) : RawEnum {
+    REPLY_CAP("reply_cap"),
+    TRUNCATED("truncated"),
+    UNSURE("unsure"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewHeldThreadReason>("dev.optio.core.model.PrReviewHeldThreadReason", entries, UNKNOWN)
+}
+
+/** A thread the review agent left for a person to answer. */
+@Serializable
+data class PrReviewHeldThread(
+    val threadId: String,
+    val commentId: Double,
+    val reason: PrReviewHeldThreadReason,
+)
+
+/** Per thread, the last comment id Optio has already handled. */
+typealias PrReviewThreadWatermarks = Map<String, Double>
 
 @Serializable(with = PrReviewVerdict.Companion::class)
 enum class PrReviewVerdict(override val raw: String) : RawEnum {

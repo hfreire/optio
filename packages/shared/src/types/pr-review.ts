@@ -25,7 +25,19 @@ export enum PrReviewRunState {
   CANCELLED = "cancelled",
 }
 
-export type PrReviewRunKind = "initial" | "rereview" | "chat";
+export type PrReviewRunKind = "initial" | "rereview" | "chat" | "threads-only";
+
+export type PrReviewHeldThreadReason = "reply_cap" | "truncated" | "unsure";
+
+/** A thread the review agent left for a person to answer. */
+export interface PrReviewHeldThread {
+  threadId: string;
+  commentId: number;
+  reason: PrReviewHeldThreadReason;
+}
+
+/** Per thread, the last comment id Optio has already handled. */
+export type PrReviewThreadWatermarks = Record<string, number>;
 
 export type PrReviewVerdict = "approve" | "request_changes" | "comment";
 
@@ -120,7 +132,12 @@ const PR_REVIEW_TRANSITIONS: Record<PrReviewState, PrReviewState[]> = {
     PrReviewState.CANCELLED,
     PrReviewState.FAILED,
   ],
-  [PrReviewState.REVIEWING]: [PrReviewState.READY, PrReviewState.FAILED, PrReviewState.CANCELLED],
+  [PrReviewState.REVIEWING]: [
+    PrReviewState.READY,
+    PrReviewState.SUBMITTED, // a threads-only follow-up keeps the posted review
+    PrReviewState.FAILED,
+    PrReviewState.CANCELLED,
+  ],
   [PrReviewState.READY]: [
     PrReviewState.SUBMITTED,
     PrReviewState.STALE,
