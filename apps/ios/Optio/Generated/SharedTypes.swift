@@ -3697,6 +3697,45 @@ public struct Branch: Codable, Hashable, Sendable {
     }
 }
 
+public struct ReviewThreadInfo: Codable, Hashable, Sendable {
+    public let threadId: String
+    public let firstCommentId: Double
+    public let firstCommentAuthor: String?
+    /// GitHub review the first comment belongs to, to recognise Optio's own inline comments.
+    public let firstCommentReviewId: Double?
+    public let lastCommentId: Double?
+    public let lastCommentAuthor: String?
+    public let isResolved: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case firstCommentId = "firstCommentId"
+        case firstCommentAuthor = "firstCommentAuthor"
+        case firstCommentReviewId = "firstCommentReviewId"
+        case lastCommentId = "lastCommentId"
+        case lastCommentAuthor = "lastCommentAuthor"
+        case isResolved = "isResolved"
+    }
+
+    public init(
+        threadId: String,
+        firstCommentId: Double,
+        firstCommentAuthor: String? = nil,
+        firstCommentReviewId: Double? = nil,
+        lastCommentId: Double? = nil,
+        lastCommentAuthor: String? = nil,
+        isResolved: Bool? = nil
+    ) {
+        self.threadId = threadId
+        self.firstCommentId = firstCommentId
+        self.firstCommentAuthor = firstCommentAuthor
+        self.firstCommentReviewId = firstCommentReviewId
+        self.lastCommentId = lastCommentId
+        self.lastCommentAuthor = lastCommentAuthor
+        self.isResolved = isResolved
+    }
+}
+
 // MARK: - image.ts
 
 public enum PresetImageId: String, Codable, Hashable, Sendable, CaseIterable {
@@ -7907,16 +7946,54 @@ public enum PrReviewRunKind: String, Codable, Hashable, Sendable, CaseIterable {
     case initial = "initial"
     case rereview = "rereview"
     case chat = "chat"
+    case threadsOnly = "threads-only"
     /// Fallback for raw values this client does not know about yet.
     case unknown = "__unknown__"
 
-    public static let allCases: [PrReviewRunKind] = [.initial, .rereview, .chat]
+    public static let allCases: [PrReviewRunKind] = [.initial, .rereview, .chat, .threadsOnly]
 
     public init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = PrReviewRunKind(rawValue: raw) ?? .unknown
     }
 }
+
+public enum PrReviewHeldThreadReason: String, Codable, Hashable, Sendable, CaseIterable {
+    case replyCap = "reply_cap"
+    case truncated = "truncated"
+    case unsure = "unsure"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [PrReviewHeldThreadReason] = [.replyCap, .truncated, .unsure]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PrReviewHeldThreadReason(rawValue: raw) ?? .unknown
+    }
+}
+
+/// A thread the review agent left for a person to answer.
+public struct PrReviewHeldThread: Codable, Hashable, Sendable {
+    public let threadId: String
+    public let commentId: Double
+    public let reason: PrReviewHeldThreadReason
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case commentId = "commentId"
+        case reason = "reason"
+    }
+
+    public init(threadId: String, commentId: Double, reason: PrReviewHeldThreadReason) {
+        self.threadId = threadId
+        self.commentId = commentId
+        self.reason = reason
+    }
+}
+
+/// Per thread, the last comment id Optio has already handled.
+public typealias PrReviewThreadWatermarks = [String: Double]
 
 public enum PrReviewVerdict: String, Codable, Hashable, Sendable, CaseIterable {
     case approve = "approve"
@@ -7979,6 +8056,170 @@ public struct PrReviewFileComment: Codable, Hashable, Sendable {
         self.line = line
         self.side = side
         self.body = body
+    }
+}
+
+public enum PrReviewThreadActionKind: String, Codable, Hashable, Sendable, CaseIterable {
+    case resolve = "resolve"
+    case reply = "reply"
+    case replyResolve = "reply_resolve"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [PrReviewThreadActionKind] = [.resolve, .reply, .replyResolve]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PrReviewThreadActionKind(rawValue: raw) ?? .unknown
+    }
+}
+
+/// An action on an existing review thread, run when the review is submitted.
+public struct PrReviewThreadAction: Codable, Hashable, Sendable {
+    /// GitHub GraphQL review-thread node id, or GitLab discussion id.
+    public let threadId: String
+    /// REST id of the thread's first comment (GitHub reply target).
+    public let commentId: Double
+    public let action: PrReviewThreadActionKind
+    /// Markdown; required for `reply` and `reply_resolve`.
+    public let body: String?
+    /// Off = skipped on submit. Absent means on.
+    public let enabled: Bool?
+    /// Read-only progress merged in by the API: the reply landed.
+    public let replied: Bool?
+    /// Read-only: the thread was resolved.
+    public let resolved: Bool?
+    /// Read-only: refused as not a thread on this PR with that first comment; never retried.
+    public let refused: Bool?
+    /// Read-only: the thread was started by an account Optio does not post as; retried by a person.
+    public let authorMismatch: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case commentId = "commentId"
+        case action = "action"
+        case body = "body"
+        case enabled = "enabled"
+        case replied = "replied"
+        case resolved = "resolved"
+        case refused = "refused"
+        case authorMismatch = "authorMismatch"
+    }
+
+    public init(
+        threadId: String,
+        commentId: Double,
+        action: PrReviewThreadActionKind,
+        body: String? = nil,
+        enabled: Bool? = nil,
+        replied: Bool? = nil,
+        resolved: Bool? = nil,
+        refused: Bool? = nil,
+        authorMismatch: Bool? = nil
+    ) {
+        self.threadId = threadId
+        self.commentId = commentId
+        self.action = action
+        self.body = body
+        self.enabled = enabled
+        self.replied = replied
+        self.resolved = resolved
+        self.refused = refused
+        self.authorMismatch = authorMismatch
+    }
+}
+
+public struct PrReviewThreadProgressItem: Codable, Hashable, Sendable {
+    /// Identity of the action the steps belong to; a mismatch means the action was edited.
+    public let fp: String?
+    public let replied: Bool?
+    public let resolved: Bool?
+    public let refused: Bool?
+    public let authorMismatch: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case fp = "fp"
+        case replied = "replied"
+        case resolved = "resolved"
+        case refused = "refused"
+        case authorMismatch = "authorMismatch"
+    }
+
+    public init(
+        fp: String? = nil,
+        replied: Bool? = nil,
+        resolved: Bool? = nil,
+        refused: Bool? = nil,
+        authorMismatch: Bool? = nil
+    ) {
+        self.fp = fp
+        self.replied = replied
+        self.resolved = resolved
+        self.refused = refused
+        self.authorMismatch = authorMismatch
+    }
+}
+
+/// Which steps of each action ran, keyed by threadId; kept apart from the editable list.
+public typealias PrReviewThreadProgress = [String: PrReviewThreadProgressItem]
+
+public enum PrReviewThreadActionErrorKind: String, Codable, Hashable, Sendable, CaseIterable {
+    case rateLimit = "rate_limit"
+    case auth = "auth"
+    case transient = "transient"
+    /// Fallback for raw values this client does not know about yet.
+    case unknown = "__unknown__"
+
+    public static let allCases: [PrReviewThreadActionErrorKind] = [.rateLimit, .auth, .transient]
+
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PrReviewThreadActionErrorKind(rawValue: raw) ?? .unknown
+    }
+}
+
+public struct PrReviewThreadActionResult: Codable, Hashable, Sendable {
+    public enum Status: String, Codable, Hashable, Sendable, CaseIterable {
+        case done = "done"
+        case failed = "failed"
+        case skipped = "skipped"
+        /// Fallback for raw values this client does not know about yet.
+        case unknown = "__unknown__"
+
+        public static let allCases: [Status] = [.done, .failed, .skipped]
+
+        public init(from decoder: any Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Status(rawValue: raw) ?? .unknown
+        }
+    }
+
+    public let threadId: String
+    public let action: PrReviewThreadActionKind
+    public let status: Status
+    public let error: String?
+    public let errorKind: PrReviewThreadActionErrorKind?
+
+    private enum CodingKeys: String, CodingKey {
+        case threadId = "threadId"
+        case action = "action"
+        case status = "status"
+        case error = "error"
+        case errorKind = "errorKind"
+    }
+
+    public init(
+        threadId: String,
+        action: PrReviewThreadActionKind,
+        status: Status,
+        error: String? = nil,
+        errorKind: PrReviewThreadActionErrorKind? = nil
+    ) {
+        self.threadId = threadId
+        self.action = action
+        self.status = status
+        self.error = error
+        self.errorKind = errorKind
     }
 }
 

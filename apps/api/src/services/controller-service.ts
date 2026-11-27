@@ -3,6 +3,7 @@
  * check before it reaches an existing mutation or run service. No arbitrary
  * HTTP, SQL, secrets, shell access, or workspace switching is exposed.
  */
+import { withProgress } from "./pr-review-thread-actions.js";
 import { and, desc, eq, ilike, or, type Column } from "drizzle-orm";
 import type { WorkSpec, TriggerTargetType } from "@optio/shared";
 import { db } from "../db/client.js";
@@ -187,6 +188,7 @@ export function describeWork(work: Awaited<ReturnType<typeof getControllerWork>>
               verdict: r.verdict,
               summary: r.summary,
               fileComments: r.fileComments,
+              threadActions: withProgress(r).threadActions,
               errorMessage: r.errorMessage,
             }
           : {}),

@@ -18,7 +18,14 @@ import {
   check,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { RemoteWorkspaceLaunch, RemoteWorkspaceProviderId } from "@optio/shared";
+import type {
+  PrReviewThreadAction,
+  PrReviewThreadProgress,
+  PrReviewThreadWatermarks,
+  PrReviewHeldThread,
+  RemoteWorkspaceLaunch,
+  RemoteWorkspaceProviderId,
+} from "@optio/shared";
 import type {
   ConfigApplyResult,
   WorkLink,
@@ -1710,6 +1717,27 @@ export const prReviews = pgTable(
       jsonb("file_comments").$type<
         Array<{ path: string; line?: number; side?: string; body: string }>
       >(),
+    submitClaimedAt: timestamp("submit_claimed_at", { withTimezone: true }),
+    threadActions: jsonb("thread_actions")
+      .$type<PrReviewThreadAction[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    threadActionProgress: jsonb("thread_action_progress")
+      .$type<PrReviewThreadProgress>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    postedReviewIds: jsonb("posted_review_ids")
+      .$type<number[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    threadWatermarks: jsonb("thread_watermarks")
+      .$type<PrReviewThreadWatermarks>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    heldThreads: jsonb("held_threads")
+      .$type<PrReviewHeldThread[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     origin: text("origin").notNull().default("manual"), // "manual" | "auto"
     userEngaged: boolean("user_engaged").notNull().default(false),
     autoSubmitted: boolean("auto_submitted").notNull().default(false),
@@ -1752,7 +1780,7 @@ export const prReviewRuns = pgTable(
     prReviewId: uuid("pr_review_id")
       .notNull()
       .references(() => prReviews.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull().default("initial"), // "initial" | "rereview" | "chat"
+    kind: text("kind").notNull().default("initial"), // "initial" | "rereview" | "threads-only" | "chat"
     state: prReviewRunStateEnum("state").notNull().default("queued"),
     prompt: text("prompt"),
     sessionId: text("session_id"),

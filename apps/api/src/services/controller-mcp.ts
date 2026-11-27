@@ -2,6 +2,7 @@ import { CreateTriggerBodySchema, UpdateTriggerBodySchema } from "../schemas/tri
 import { AgentTypeSchema } from "../schemas/task.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { MAX_THREAD_ACTIONS, threadActionShape } from "./pr-review-thread-actions.js";
 import type { AgentProviderId } from "@optio/shared";
 import { providerAllowed } from "./feature-guard.js";
 import type { ControllerPrincipal } from "./controller-auth.js";
@@ -601,6 +602,7 @@ export function createControllerMcp(
           .max(200)
           .nullable()
           .optional(),
+        threadActions: z.array(threadActionShape).max(MAX_THREAD_ACTIONS).optional(),
       }),
     },
     true,

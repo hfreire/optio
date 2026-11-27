@@ -7,7 +7,18 @@ import { api } from "@/lib/api-client";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { usePageTitle } from "@/hooks/use-page-title";
 import { usePrReviewLogs } from "@/hooks/use-pr-review-logs";
-import { classifyError } from "@optio/shared";
+import {
+  classifyError,
+  hasPendingThreadActions,
+  type PrReviewHeldThread,
+  type PrReviewThreadAction,
+} from "@optio/shared";
+import {
+  HeldThreads,
+  ReviewThreadActions,
+  saveBeforeSubmit,
+  submitToast,
+} from "@/components/review-thread-actions";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { LogViewer } from "@/components/log-viewer";
 import { AgentAvatar } from "@/components/agent-avatar";
@@ -54,6 +65,8 @@ interface Review {
   verdict: string | null;
   summary: string | null;
   fileComments: Array<{ path: string; line?: number; side?: string; body: string }> | null;
+  threadActions?: PrReviewThreadAction[];
+  heldThreads?: PrReviewHeldThread[];
   origin: string;
   userEngaged: boolean;
   autoSubmitted: boolean;
@@ -100,6 +113,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
   const [comments, setComments] = useState<
     Array<{ path: string; line?: number; side?: string; body: string }>
   >([]);
+  const [threadActions, setThreadActions] = useState<PrReviewThreadAction[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -122,6 +136,7 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
       setSummary(r.review.summary ?? "");
       setVerdict(r.review.verdict ?? "");
       setComments(r.review.fileComments ?? []);
+      setThreadActions(r.review.threadActions ?? []);
       setDirty(false);
 
       if (r.review.prUrl) {
@@ -201,30 +216,36 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
         ? `CI ${prStatus.checksStatus} — merging anyway`
         : "";
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<boolean> => {
     setSaving(true);
+    let saved = false;
     try {
       const res = await api.updatePrReview(id, {
         summary,
         verdict: (verdict as any) || null,
         fileComments: comments,
+        threadActions,
       });
       setReview(res.review);
       setDirty(false);
       toast.success("Draft saved");
+      saved = true;
     } catch (err: any) {
       toast.error(err.message || "Failed to save");
     }
     setSaving(false);
+    return saved;
   };
 
   const handleSubmit = async () => {
-    if (dirty) await handleSave();
+    if (!(await saveBeforeSubmit(dirty, handleSave))) return;
     setSubmitting(true);
     try {
       const res = await api.submitPrReview(id);
       setReview(res.review);
-      toast.success("Review submitted");
+      setThreadActions(res.review.threadActions ?? []);
+      const t = submitToast(res.threadActionResults);
+      toast[t.kind](t.message);
     } catch (err: any) {
       toast.error(err.message || "Failed to submit");
     }
@@ -512,6 +533,11 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
           {/* Verdict + summary widget — collapsible. When collapsed, the
               header strip stays visible so the user can see the verdict at a
               glance without expanding. */}
+          {!!review.heldThreads?.length && (
+            <div className="shrink-0 border-b border-border bg-bg-card px-4 py-2">
+              <HeldThreads threads={review.heldThreads} prUrl={review.prUrl} />
+            </div>
+          )}
           {hasDraft && (
             <div className="shrink-0 border-b border-border bg-bg-card">
               <button
@@ -682,6 +708,18 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
                   </div>
                 </div>
 
+                {threadActions.length > 0 && (
+                  <ReviewThreadActions
+                    actions={threadActions}
+                    prUrl={review.prUrl}
+                    editable={isEditable}
+                    onChange={(next) => {
+                      setThreadActions(next);
+                      setDirty(true);
+                    }}
+                  />
+                )}
+
                 {/* Actions */}
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-border">
                   <div className="flex items-center gap-2">
@@ -695,6 +733,17 @@ export default function ReviewDetailPage({ params }: { params: Promise<{ id: str
                       <Button size="sm" onClick={handleSubmit} disabled={submitting || !verdict}>
                         {submitting ? <Loader2 className="animate-spin" /> : <Send />}
                         Submit Review
+                      </Button>
+                    )}
+                    {review.state === "submitted" && hasPendingThreadActions(threadActions) && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={handleSubmit}
+                        disabled={submitting}
+                      >
+                        {submitting ? <Loader2 className="animate-spin" /> : <Send />}
+                        Apply pending thread actions
                       </Button>
                     )}
                     {review.state === "submitted" && (

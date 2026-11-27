@@ -79,6 +79,7 @@ export const ReviewDraftSchema = z
     verdict: z.string().nullable().describe("`approve` | `request_changes` | `comment` | null"),
     summary: z.string().nullable(),
     fileComments: z.array(z.record(z.unknown())).nullable(),
+    threadActions: z.array(z.record(z.unknown())).optional(),
     origin: z.string().describe("`manual` | `auto`").optional(),
     userEngaged: z.boolean().optional(),
     autoSubmitted: z.boolean().optional(),

@@ -1583,6 +1583,18 @@ data class Branch(
     val protected: Boolean? = null,
 )
 
+@Serializable
+data class ReviewThreadInfo(
+    val threadId: String,
+    val firstCommentId: Double,
+    val firstCommentAuthor: String? = null,
+    /** GitHub review the first comment belongs to, to recognise Optio's own inline comments. */
+    val firstCommentReviewId: Double? = null,
+    val lastCommentId: Double? = null,
+    val lastCommentAuthor: String? = null,
+    val isResolved: Boolean? = null,
+)
+
 // endregion
 
 // region glance.ts
@@ -3667,11 +3679,34 @@ enum class PrReviewRunKind(override val raw: String) : RawEnum {
     INITIAL("initial"),
     REREVIEW("rereview"),
     CHAT("chat"),
+    THREADS_ONLY("threads-only"),
     /** Fallback for raw values this client does not know about yet. */
     UNKNOWN("__unknown__");
 
     companion object : RawEnumSerializer<PrReviewRunKind>("dev.optio.core.model.PrReviewRunKind", entries, UNKNOWN)
 }
+
+@Serializable(with = PrReviewHeldThreadReason.Companion::class)
+enum class PrReviewHeldThreadReason(override val raw: String) : RawEnum {
+    REPLY_CAP("reply_cap"),
+    TRUNCATED("truncated"),
+    UNSURE("unsure"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewHeldThreadReason>("dev.optio.core.model.PrReviewHeldThreadReason", entries, UNKNOWN)
+}
+
+/** A thread the review agent left for a person to answer. */
+@Serializable
+data class PrReviewHeldThread(
+    val threadId: String,
+    val commentId: Double,
+    val reason: PrReviewHeldThreadReason,
+)
+
+/** Per thread, the last comment id Optio has already handled. */
+typealias PrReviewThreadWatermarks = Map<String, Double>
 
 @Serializable(with = PrReviewVerdict.Companion::class)
 enum class PrReviewVerdict(override val raw: String) : RawEnum {
@@ -3711,6 +3746,83 @@ data class PrReviewFileComment(
     val side: String? = null,
     val body: String,
 )
+
+@Serializable(with = PrReviewThreadActionKind.Companion::class)
+enum class PrReviewThreadActionKind(override val raw: String) : RawEnum {
+    RESOLVE("resolve"),
+    REPLY("reply"),
+    REPLY_RESOLVE("reply_resolve"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewThreadActionKind>("dev.optio.core.model.PrReviewThreadActionKind", entries, UNKNOWN)
+}
+
+/** An action on an existing review thread, run when the review is submitted. */
+@Serializable
+data class PrReviewThreadAction(
+    /** GitHub GraphQL review-thread node id, or GitLab discussion id. */
+    val threadId: String,
+    /** REST id of the thread's first comment (GitHub reply target). */
+    val commentId: Double,
+    val action: PrReviewThreadActionKind,
+    /** Markdown; required for `reply` and `reply_resolve`. */
+    val body: String? = null,
+    /** Off = skipped on submit. Absent means on. */
+    val enabled: Boolean? = null,
+    /** Read-only progress merged in by the API: the reply landed. */
+    val replied: Boolean? = null,
+    /** Read-only: the thread was resolved. */
+    val resolved: Boolean? = null,
+    /** Read-only: refused as not a thread on this PR with that first comment; never retried. */
+    val refused: Boolean? = null,
+    /** Read-only: the thread was started by an account Optio does not post as; retried by a person. */
+    val authorMismatch: Boolean? = null,
+)
+
+@Serializable
+data class PrReviewThreadProgressItem(
+    /** Identity of the action the steps belong to; a mismatch means the action was edited. */
+    val fp: String? = null,
+    val replied: Boolean? = null,
+    val resolved: Boolean? = null,
+    val refused: Boolean? = null,
+    val authorMismatch: Boolean? = null,
+)
+
+/** Which steps of each action ran, keyed by threadId; kept apart from the editable list. */
+typealias PrReviewThreadProgress = Map<String, PrReviewThreadProgressItem>
+
+@Serializable(with = PrReviewThreadActionErrorKind.Companion::class)
+enum class PrReviewThreadActionErrorKind(override val raw: String) : RawEnum {
+    RATE_LIMIT("rate_limit"),
+    AUTH("auth"),
+    TRANSIENT("transient"),
+    /** Fallback for raw values this client does not know about yet. */
+    UNKNOWN("__unknown__");
+
+    companion object : RawEnumSerializer<PrReviewThreadActionErrorKind>("dev.optio.core.model.PrReviewThreadActionErrorKind", entries, UNKNOWN)
+}
+
+@Serializable
+data class PrReviewThreadActionResult(
+    val threadId: String,
+    val action: PrReviewThreadActionKind,
+    val status: Status,
+    val error: String? = null,
+    val errorKind: PrReviewThreadActionErrorKind? = null,
+) {
+    @Serializable(with = Status.Companion::class)
+    enum class Status(override val raw: String) : RawEnum {
+        DONE("done"),
+        FAILED("failed"),
+        SKIPPED("skipped"),
+        /** Fallback for raw values this client does not know about yet. */
+        UNKNOWN("__unknown__");
+
+        companion object : RawEnumSerializer<Status>("dev.optio.core.model.PrReviewThreadActionResult.Status", entries, UNKNOWN)
+    }
+}
 
 // endregion
 

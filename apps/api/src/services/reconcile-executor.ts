@@ -43,6 +43,7 @@ import * as taskService from "./task-service.js";
 import { enqueueReconcile } from "./reconcile-queue.js";
 import { resetRunAttempt, stopPreviousAttempt } from "./run-log-service.js";
 import { classifyGitHubFailure, type GitHubFailure } from "./git-platform/github.js";
+import { ThreadActionsNotAppliedError } from "./pr-review-thread-actions.js";
 import { logger } from "../logger.js";
 
 /**
@@ -1085,14 +1086,39 @@ async function applySubmitReview(snapshot: WorldSnapshot): Promise<ExecuteOutcom
   const prReviewId = snapshot.run.ref.id;
   const { submitReview } = await import("./pr-review-service.js");
   try {
-    await submitReview(prReviewId);
+    await submitReview(prReviewId, undefined, { unattended: true, resolveThreads: true });
     return { status: "applied", reason: "auto_submitted" };
   } catch (err) {
-    const cooldown = await handleGithubWriteBlock(snapshot, err);
+    const blocked = err instanceof ThreadActionsNotAppliedError ? (err.cause ?? err) : err;
+    const cooldown = await handleGithubWriteBlock(snapshot, blocked);
     if (cooldown) return cooldown;
+    if (err instanceof ThreadActionsNotAppliedError) return backOffThreadActions(snapshot, err);
     const msg = err instanceof Error ? err.message : String(err);
     return { status: "error", reason: msg, error: err };
   }
+}
+
+const THREAD_ACTIONS_BACKOFF_BASE_MS = 30_000;
+const THREAD_ACTIONS_MAX_ATTEMPTS = 5;
+
+async function backOffThreadActions(
+  snapshot: WorldSnapshot,
+  err: ThreadActionsNotAppliedError,
+): Promise<ExecuteOutcome> {
+  const run = snapshot.run;
+  const attempts = run.status.reconcileAttempts ?? 0;
+  if (attempts >= THREAD_ACTIONS_MAX_ATTEMPTS) {
+    const { parkThreadActionsForPerson } = await import("./pr-review-service.js");
+    await parkThreadActionsForPerson(run.ref.id);
+    return { status: "applied", reason: "thread_actions_gave_up" };
+  }
+  const delayMs = THREAD_ACTIONS_BACKOFF_BASE_MS * 2 ** attempts;
+  await persistGithubCooldown("pr-review", run.ref.id, Date.now() + delayMs, {
+    incrementAttempts: true,
+    errorMessage: err.message,
+  });
+  await enqueueReconcile(run.ref, { reason: "thread_actions_backoff", delayMs });
+  return { status: "applied", reason: "thread_actions_backoff" };
 }
 
 async function applyMarkStale(snapshot: WorldSnapshot): Promise<ExecuteOutcome> {

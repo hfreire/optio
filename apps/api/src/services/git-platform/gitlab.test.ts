@@ -641,6 +641,89 @@ describe("GitLabPlatform", () => {
     });
   });
 
+  describe("review thread actions", () => {
+    it("lists the MR's discussions with first-note ids and the current user", async () => {
+      mockJsonResponse({ username: "optio-bot" });
+      mockJsonResponse([
+        { id: "d1", notes: [{ id: 5, author: { username: "optio-bot" } }, { id: 6 }] },
+        { id: "d2", notes: [] },
+      ]);
+
+      const res = await platform.listReviewThreads(ri, 7);
+
+      expect(res).toEqual({
+        viewerLogin: "optio-bot",
+        threads: [{ threadId: "d1", firstCommentId: 5, firstCommentAuthor: "optio-bot" }],
+      });
+      expect(mockFetch.mock.calls[0][0]).toBe("https://gitlab.com/api/v4/user");
+      expect(mockFetch.mock.calls[1][0]).toContain(
+        `/projects/${projectId}/merge_requests/7/discussions?per_page=100&page=1`,
+      );
+    });
+
+    it("reads the account the token acts as", async () => {
+      mockJsonResponse({ username: "optio-bot" });
+      await expect(platform.getViewerLogin(ri)).resolves.toBe("optio-bot");
+    });
+
+    it("follows pagination until a short page", async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({
+        id: `d${i}`,
+        notes: [{ id: i + 1, author: { username: "optio-bot" } }],
+      }));
+      mockJsonResponse({ username: "optio-bot" });
+      mockJsonResponse(full);
+      mockJsonResponse([{ id: "last", notes: [{ id: 999, author: { username: "optio-bot" } }] }]);
+
+      const res = await platform.listReviewThreads(ri, 7);
+
+      expect(res.threads).toHaveLength(101);
+      expect(mockFetch.mock.calls[2][0]).toContain("page=2");
+    });
+
+    it("gives up after 50 full pages", async () => {
+      const full = Array.from({ length: 100 }, (_, i) => ({ id: `d${i}`, notes: [{ id: i + 1 }] }));
+      mockJsonResponse({ username: "optio-bot" });
+      for (let i = 0; i < 50; i++) mockJsonResponse(full);
+
+      await expect(platform.listReviewThreads(ri, 7)).rejects.toThrow("too many discussions");
+    });
+
+    it("replies with a note on the discussion", async () => {
+      mockJsonResponse({});
+
+      await platform.replyToReviewThread(ri, 7, { threadId: "abc123", commentId: 5 }, "Done");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7/discussions/abc123/notes`,
+      );
+      expect(call[1].method).toBe("POST");
+      expect(JSON.parse(call[1].body)).toEqual({ body: "Done" });
+    });
+
+    it("resolves the discussion", async () => {
+      mockJsonResponse({});
+
+      await platform.resolveReviewThread(ri, 7, "abc123");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        `https://gitlab.com/api/v4/projects/${projectId}/merge_requests/7/discussions/abc123`,
+      );
+      expect(call[1].method).toBe("PUT");
+      expect(JSON.parse(call[1].body)).toEqual({ resolved: true });
+    });
+
+    it("throws a GitLabApiError on failure", async () => {
+      mockJsonResponse({ message: "404 Not found" }, false, 404);
+
+      await expect(platform.resolveReviewThread(ri, 7, "nope")).rejects.toBeInstanceOf(
+        GitLabApiError,
+      );
+    });
+  });
+
   describe("listIssues", () => {
     it("maps GitLab issue fields", async () => {
       mockJsonResponse([

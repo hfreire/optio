@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildRouteTestApp } from "../test-utils/build-route-test-app.js";
 import { GitHubApiError } from "../services/git-platform/github.js";
+import { ThreadActionsNotAppliedError } from "../services/pr-review-thread-actions.js";
 
 const mockLaunchPrReview = vi.fn();
 const mockGetPrReview = vi.fn();
@@ -153,6 +154,20 @@ describe("PR review routes stay inside the caller's workspace", () => {
     const res = await app.inject({ method: "POST", url: "/api/pr-reviews/rev-1/cancel" });
     expect(res.statusCode).toBe(200);
     expect(mockSetControlIntent).toHaveBeenCalledWith("rev-1", "cancel");
+  });
+
+  it("returns the per-action results when nothing could be submitted", async () => {
+    mockGetPrReview.mockResolvedValue({ ...foreign, workspaceId: "ws-1" });
+    const results = [
+      { threadId: "t", action: "resolve", status: "failed", error: "Refused: nope" },
+    ];
+    mockSubmitReview.mockRejectedValue(new ThreadActionsNotAppliedError(results as never));
+    const res = await app.inject({ method: "POST", url: "/api/pr-reviews/rev-1/submit" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining("Nothing was submitted"),
+      threadActionResults: results,
+    });
   });
 
   it("merges or reads status only for PRs of the workspace's repos", async () => {

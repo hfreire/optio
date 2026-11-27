@@ -219,6 +219,164 @@ describe("GitHubPlatform", () => {
     });
   });
 
+  describe("review thread actions", () => {
+    it("returns the id of the review it posted", async () => {
+      mockJsonResponse({ id: 555, html_url: "u" });
+      const result = await platform.submitReview(ri, 42, { event: "COMMENT", body: "x" });
+      expect(result).toEqual({ url: "u", reviewId: 555 });
+    });
+
+    it("reads the account the token acts as", async () => {
+      mockJsonResponse({ data: { viewer: { login: "optio-app[bot]" } } });
+      await expect(platform.getViewerLogin(ri)).resolves.toBe("optio-app[bot]");
+    });
+
+    it("lists the PR's threads with first-comment ids and the viewer", async () => {
+      mockJsonResponse({
+        data: {
+          viewer: { login: "optio-bot" },
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: true, endCursor: "c1" },
+                nodes: [
+                  {
+                    id: "PRRT_1",
+                    isResolved: false,
+                    comments: {
+                      nodes: [
+                        {
+                          databaseId: 11,
+                          author: { login: "optio-bot" },
+                          pullRequestReview: { databaseId: 900 },
+                        },
+                      ],
+                    },
+                    lastComment: { nodes: [{ databaseId: 15, author: { login: "alice" } }] },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      });
+      mockJsonResponse({
+        data: {
+          viewer: { login: "optio-bot" },
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [
+                  {
+                    id: "PRRT_2",
+                    isResolved: true,
+                    comments: { nodes: [{ databaseId: 22, author: null }] },
+                    lastComment: { nodes: [{ databaseId: 22, author: null }] },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      });
+
+      const res = await platform.listReviewThreads(ri, 42);
+
+      expect(res).toEqual({
+        viewerLogin: "optio-bot",
+        threads: [
+          {
+            threadId: "PRRT_1",
+            firstCommentId: 11,
+            firstCommentAuthor: "optio-bot",
+            firstCommentReviewId: 900,
+            lastCommentId: 15,
+            lastCommentAuthor: "alice",
+            isResolved: false,
+          },
+          {
+            threadId: "PRRT_2",
+            firstCommentId: 22,
+            firstCommentAuthor: null,
+            firstCommentReviewId: null,
+            lastCommentId: 22,
+            lastCommentAuthor: null,
+            isResolved: true,
+          },
+        ],
+      });
+      const first = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(first.variables).toMatchObject({ owner: "acme", repo: "widgets", number: 42 });
+      expect(JSON.parse(mockFetch.mock.calls[1][1].body).variables.after).toBe("c1");
+    });
+
+    it("throws when the lookup returns GraphQL errors or no pull request", async () => {
+      mockJsonResponse({ errors: [{ message: "nope" }] });
+      await expect(platform.listReviewThreads(ri, 42)).rejects.toThrow();
+      mockJsonResponse({ data: { viewer: { login: "x" }, repository: { pullRequest: null } } });
+      await expect(platform.listReviewThreads(ri, 42)).rejects.toThrow();
+    });
+
+    it("replies through the comment replies endpoint", async () => {
+      mockJsonResponse({ id: 9 });
+
+      await platform.replyToReviewThread(
+        ri,
+        42,
+        { threadId: "PRRT_abc", commentId: 123 },
+        "Fixed in abc123",
+      );
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe(
+        "https://api.github.com/repos/acme/widgets/pulls/42/comments/123/replies",
+      );
+      expect(call[1].method).toBe("POST");
+      expect(JSON.parse(call[1].body)).toEqual({ body: "Fixed in abc123" });
+    });
+
+    it("resolves a thread with the GraphQL mutation", async () => {
+      mockJsonResponse({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+
+      await platform.resolveReviewThread(ri, 42, "PRRT_abc");
+
+      const call = mockFetch.mock.calls[0];
+      expect(call[0]).toBe("https://api.github.com/graphql");
+      const payload = JSON.parse(call[1].body);
+      expect(payload.query).toContain("resolveReviewThread");
+      expect(payload.variables).toEqual({ threadId: "PRRT_abc" });
+    });
+
+    it("posts GraphQL to /api/graphql on GitHub Enterprise", async () => {
+      mockJsonResponse({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+
+      await platform.resolveReviewThread(
+        { ...ri, apiBaseUrl: "https://ghe.example.com/api/v3" },
+        42,
+        "PRRT_abc",
+      );
+
+      expect(mockFetch.mock.calls[0][0]).toBe("https://ghe.example.com/api/graphql");
+    });
+
+    it("throws when GraphQL answers 200 with errors", async () => {
+      mockJsonResponse({ errors: [{ message: "Could not resolve to a node" }] });
+
+      await expect(platform.resolveReviewThread(ri, 42, "PRRT_bad")).rejects.toThrow(
+        /Could not resolve to a node/,
+      );
+    });
+
+    it("throws a GitHubApiError on an HTTP failure", async () => {
+      mockJsonResponse({ message: "Not Found" }, false, 404);
+
+      await expect(
+        platform.replyToReviewThread(ri, 42, { threadId: "t", commentId: 1 }, "x"),
+      ).rejects.toBeInstanceOf(GitHubApiError);
+    });
+  });
+
   describe("listIssues", () => {
     it("fetches issues and maps response", async () => {
       mockJsonResponse([

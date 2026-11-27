@@ -4,6 +4,7 @@ import {
   parsePrUrl,
   type PrReviewVerdict,
   type PrReviewFileComment,
+  type PrReviewThreadAction,
 } from "@optio/shared";
 import type { ControllerPrincipal } from "./controller-auth.js";
 import { ControllerError, requireChange, requireManage, tenant } from "./controller-access.js";
@@ -11,6 +12,10 @@ import { getControllerWork } from "./controller-service.js";
 import { db } from "../db/client.js";
 import { repos, prReviewChatMessages } from "../db/schema.js";
 import * as reviews from "./pr-review-service.js";
+import {
+  ThreadActionsNotAppliedError,
+  ThreadActionValidationError,
+} from "./pr-review-thread-actions.js";
 
 async function reviewTarget(p: ControllerPrincipal, id: string, write = false) {
   const work = await getControllerWork(p, id);
@@ -52,12 +57,18 @@ export async function updateControllerReview(
     summary?: string | null;
     verdict?: PrReviewVerdict | null;
     fileComments?: PrReviewFileComment[] | null;
+    threadActions?: PrReviewThreadAction[];
   },
 ) {
   const row = await reviewTarget(p, id, true);
   if (!["ready", "stale"].includes(row.state))
     throw new ControllerError(409, `Cannot edit review in ${row.state} state`);
-  await reviews.updatePrReviewDraft(id, updates);
+  try {
+    await reviews.updatePrReviewDraft(id, updates);
+  } catch (err) {
+    if (err instanceof ThreadActionValidationError) throw new ControllerError(400, err.message);
+    throw err;
+  }
   return { id, updated: true, href: `/reviews/${id}` };
 }
 export async function controlControllerReview(
@@ -69,8 +80,19 @@ export async function controlControllerReview(
   if (action === "submit") {
     if (!["ready", "stale"].includes(row.state))
       throw new ControllerError(409, `Cannot submit review in ${row.state} state`);
-    const result = await reviews.submitReview(id, p.actor.userId ?? undefined);
-    return { id, state: result.review.state, reviewUrl: result.reviewUrl };
+    const result = await reviews
+      .submitReview(id, p.actor.userId ?? undefined, { unattended: true })
+      .catch((err: unknown) => {
+        if (err instanceof ThreadActionsNotAppliedError)
+          throw new ControllerError(409, err.message);
+        throw err;
+      });
+    return {
+      id,
+      state: result.review.state,
+      reviewUrl: result.reviewUrl,
+      threadActionResults: result.threadActionResults,
+    };
   }
   await reviews.setControlIntent(id, action);
   return { id, action, accepted: true };

@@ -40,6 +40,10 @@ const EVENT_LABELS: Record<string, { title: string; description: string }> = {
     title: "New comment",
     description: "When someone comments on your task",
   },
+  "review.needs_you": {
+    title: "Review thread needs you",
+    description: "When Optio's review leaves a thread for a person to answer (admins)",
+  },
 };
 
 export function NotificationPreferences() {
