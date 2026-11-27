@@ -68,3 +68,21 @@ export interface RepoImageConfig {
   /** Extra apt packages to install at pod startup */
   extraPackages?: string[];
 }
+
+export const CUSTOM_IMAGE_MAX_LENGTH = 255;
+
+const CUSTOM_IMAGE_PATTERN =
+  /^[a-zA-Z0-9][a-zA-Z0-9._-]*(:[0-9]+)?(\/[a-zA-Z0-9._-]+)*(:[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})?(@sha256:[a-f0-9]{64})?$/;
+
+export function isValidCustomImage(ref: string): boolean {
+  return ref.length <= CUSTOM_IMAGE_MAX_LENGTH && CUSTOM_IMAGE_PATTERN.test(ref);
+}
+
+/** A repo's custom image wins over its preset. */
+export function repoImageConfig(repo: {
+  imagePreset?: string | null;
+  customImage?: string | null;
+}): RepoImageConfig {
+  if (repo.customImage) return { customImage: repo.customImage };
+  return { preset: (repo.imagePreset ?? "base") as PresetImageId };
+}

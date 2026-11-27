@@ -18,9 +18,10 @@ import {
   parseMemoryMi,
   parseRepoUrl,
   AGENT_TYPES,
+  isValidCustomImage,
 } from "@optio/shared";
 import { modelBelongsToAgent } from "../services/agent-options-service.js";
-import { requireRole } from "../plugins/auth.js";
+import { requireDeploymentAdmin, requireRole } from "../plugins/auth.js";
 import { getGitHubToken } from "../services/github-token-service.js";
 import { browseGitHubRepos } from "../services/github-repo-browse-service.js";
 import { isSsrfSafeUrl } from "../utils/ssrf.js";
@@ -48,9 +49,24 @@ const createRepoSchema = z
   })
   .describe("Body for adding a repository to Optio");
 
+const customImageSchema = z
+  .string()
+  .trim()
+  .transform((v) => (v === "" ? null : v))
+  .refine((v) => v === null || isValidCustomImage(v), {
+    message: "Must be an image reference: registry/name[:tag][@sha256:digest]",
+  })
+  .nullable()
+  .optional()
+  .describe(
+    "Agent image that overrides imagePreset; empty clears it. " +
+      "Changing it requires a deployment admin.",
+  );
+
 const updateRepoSchema = z
   .object({
     imagePreset: z.string().optional(),
+    customImage: customImageSchema,
     extraPackages: z.string().optional(),
     setupCommands: z.string().optional(),
     customDockerfile: z.string().nullable().optional(),
@@ -612,6 +628,7 @@ export async function repoRoutes(rawApp: FastifyInstance) {
         response: {
           200: RepoResponseSchema,
           400: ErrorResponseSchema,
+          403: ErrorResponseSchema,
           404: ErrorResponseSchema,
         },
       },
@@ -625,6 +642,11 @@ export async function repoRoutes(rawApp: FastifyInstance) {
         return reply.status(404).send({ error: "Repo not found" });
       }
       const body = req.body;
+
+      if (body.customImage !== undefined && body.customImage !== (existing.customImage ?? null)) {
+        await requireDeploymentAdmin(req, reply);
+        if (reply.sent) return;
+      }
 
       const resourceErrors: string[] = [];
       if (body.cpuRequest) {
