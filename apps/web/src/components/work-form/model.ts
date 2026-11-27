@@ -32,6 +32,7 @@ import { CLUSTER_RUN_LOCATION, type RunLocationValue } from "@/components/run-lo
 import {
   RUNTIMES,
   TERMINAL,
+  defaultModelFor,
   optionsFromRepo,
   repoHasOwnOptions,
   repoOwnRuntime,
@@ -1312,8 +1313,13 @@ export function withProvider(d: WorkDraft, p: ModelProvider | null): WorkDraft {
   const wasProvider = !!modelProviderIdFrom(options);
   if (!p) {
     delete options[MODEL_PROVIDER_OPTION_KEY];
-    // The provider's model id means nothing to the default sign-in.
-    if (field && wasProvider) delete options[field];
+    // The provider's model id means nothing to the default sign-in, and a
+    // model of its own keeps a repo's default provider from signing the run in.
+    if (field && wasProvider) {
+      const model = defaultModelFor(d.runtime);
+      if (model) options[field] = model;
+      else delete options[field];
+    }
     return { ...d, agentOptions: options };
   }
   options[MODEL_PROVIDER_OPTION_KEY] = p.id;

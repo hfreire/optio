@@ -1,4 +1,5 @@
 import { describe as suite, it, expect } from "vitest";
+import { defaultModelFor } from "../agent-choice-model";
 import {
   EMPTY_DRAFT,
   entryOn,
@@ -519,7 +520,7 @@ suite("model providers in the draft", () => {
     expect(usableProviders(job, [provider({ agents: ["codex"] })]).map((p) => p.id)).toEqual([]);
   });
 
-  it("picking a provider sets the option and its first model; Default removes both", () => {
+  it("picking a provider sets the option and its first model; Default goes back to the agent's model", () => {
     const picked = withProvider(job, orgP);
     expect(picked.agentOptions).toEqual({
       modelProvider: "p-org",
@@ -532,7 +533,11 @@ suite("model providers in the draft", () => {
       { ...picked, agentOptions: { ...picked.agentOptions, effort: "high" } },
       null,
     );
-    expect(back.agentOptions).toEqual({ effort: "high" });
+    // A model of its own keeps a repo's default provider from signing the run in.
+    expect(back.agentOptions).toEqual({
+      effort: "high",
+      claudeModel: defaultModelFor("claude-code"),
+    });
     // Default with no provider picked leaves a chosen model alone.
     expect(
       withProvider({ ...job, agentOptions: { claudeModel: "opus" } }, null).agentOptions,
@@ -984,6 +989,26 @@ suite("repo defaults vs your last settings — the precedence", () => {
     expect(withRepoDefaults(off, repo)).toBe(off);
   });
 
+  it("starts with the repo's model provider picked, still changeable per run", () => {
+    const viaProvider = {
+      ...factory,
+      claudeModelProviderId: "p-org",
+      claudeModel: "us.anthropic.claude-opus-5-5",
+    };
+    const d = withRepoDefaults(pod, viaProvider);
+    expect(d.agentOptions).toMatchObject({
+      modelProvider: "p-org",
+      claudeModel: "us.anthropic.claude-opus-5-5",
+      claudeEffort: "high",
+    });
+    expect(signInValue(d)).toBe("provider:p-org");
+    expect(startingOptions(pod, "claude-code", viaProvider, saved).from).toBe("repo");
+    const off = withProvider(d, null);
+    expect(signInValue(off)).toBeNull();
+    expect(off.agentOptions.claudeModel).toBe(defaultModelFor("claude-code"));
+    expect(matchesRepoDefaults(off, viaProvider)).toBe(false);
+  });
+
   it("knows whether the draft still matches the repo, and resets to it", () => {
     const d = withRepoDefaults(pod, configured);
     expect(matchesRepoDefaults(d, configured)).toBe(true);
@@ -1117,7 +1142,7 @@ suite("agent credentials in the draft (the Signed in with row)", () => {
     const picked = withCredential(viaProvider, orgKey, [orgP]);
     expect(picked.agentOptions.credential).toBe(orgKey.id);
     expect(picked.agentOptions.modelProvider).toBeUndefined();
-    expect(picked.agentOptions.claudeModel).toBeUndefined();
+    expect(picked.agentOptions.claudeModel).toBe(defaultModelFor("claude-code"));
     expect(pickedCredential(picked, [orgKey, myToken])).toBe(orgKey);
     expect(signInValue(picked)).toBe(orgKey.id);
     expect(credentialIdOf(picked.agentOptions)).toBe(orgKey.id);

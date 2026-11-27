@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { SharedDirectoriesSection } from "@/components/shared-directories-section";
 import type { AgentOptionsValues } from "@/components/agent-options-picker";
-import type { AgentType } from "@optio/shared";
+import type { AgentType, ModelProvider } from "@optio/shared";
 import { DetailHeader } from "@/components/detail-header";
 import { AgentIcon } from "@/components/brand-icon";
 import { SectionCard } from "@/components/ui/section-card";
@@ -44,8 +44,11 @@ import {
   agentSummary,
   repoAgentPatch,
   repoAgentValues,
+  repoSignInOptions,
   runtimeLabel,
+  withRepoProvider,
 } from "@/components/agent-choice-model";
+import { SignInRow } from "@/components/work-form/who-extras";
 import { ManagedBanner } from "@/components/ui/managed-banner";
 import { ManagedChip } from "@/components/ui/managed-chip";
 
@@ -99,6 +102,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
   const [defaultBranch, setDefaultBranch] = useState("main");
   // Every agent column (claudeModel, copilotEffort, …) in one picker map.
   const [agentValues, setAgentValues] = useState<AgentOptionsValues>({});
+  const [providers, setProviders] = useState<ModelProvider[] | null>(null);
   const [maxTurnsCoding, setMaxTurnsCoding] = useState(250);
   const [maxTurnsReview, setMaxTurnsReview] = useState(30);
   const [autoResume, setAutoResume] = useState(false);
@@ -220,6 +224,16 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
       .catch(() => toast.error("Failed to load repo"))
       .finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    api
+      .listModelProviders()
+      .then((res) => setProviders(res.providers))
+      .catch(() => {
+        setProviders([]);
+        toast.error("Failed to load model providers");
+      });
+  }, []);
 
   // Fetch sessions for this repo
   useEffect(() => {
@@ -353,6 +367,11 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
   };
 
   const agentLine = agentSummary(defaultAgentType, agentValues);
+  const repoProviderId =
+    typeof agentValues.modelProvider === "string" && agentValues.modelProvider
+      ? agentValues.modelProvider
+      : null;
+  const repoProvider = providers?.find((p) => p.id === repoProviderId);
   const podsLine = [
     `${maxPodInstances} ${maxPodInstances === 1 ? "pod" : "pods"}`,
     `${maxAgentsPerPod} agents each`,
@@ -758,6 +777,26 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
               agentOptions={agentValues}
               onRuntimeChange={setDefaultAgentType}
               onOptionsChange={setAgentValues}
+              signIn={
+                defaultAgentType === "claude-code" ? (
+                  <SignInRow
+                    options={repoSignInOptions(providers ?? [])}
+                    value={repoProviderId ? `provider:${repoProviderId}` : null}
+                    loading={providers === null}
+                    hint="Runs that don't pick their own sign-in use this. Only the organization's providers can be a repo's default."
+                    onPick={(c) =>
+                      setAgentValues((v) =>
+                        withRepoProvider(v, providers?.find((p) => p.id === c?.providerId) ?? null),
+                      )
+                    }
+                  />
+                ) : null
+              }
+              providerModels={
+                defaultAgentType === "claude-code" && repoProvider
+                  ? (repoProvider.models["claude-code"] ?? [])
+                  : undefined
+              }
               note="The default for new work with this repo — anyone can change it per run."
               paramsHint="Saved as this repo's defaults"
               paramsNote={
