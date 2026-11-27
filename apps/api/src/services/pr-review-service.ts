@@ -894,7 +894,7 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
 /**
  * A follow-up never leaves the posted review: it goes straight back to
  * SUBMITTED, its thread actions pending for a person, or run unattended
- * (replies only) when the repo posts reviews by itself.
+ * when the repo posts reviews by itself.
  */
 async function settleFollowUp(
   review: PrReview,
