@@ -224,6 +224,7 @@ export async function runHarnessSession(
           runId: turnId,
           controllerRunKind: "session-turn",
           controllerOnly: session.assistant,
+          adapterEnv: env,
         },
         logger,
       ),

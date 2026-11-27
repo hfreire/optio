@@ -3056,6 +3056,46 @@ data class UpdateInstalledSkillInput(
     val enabled: Boolean? = null,
 )
 
+/**
+ * A git repo laid out like `~/.claude`, synced and written to
+ * `/home/agent/.claude` in Claude Code pods. `repoUrl` null is the
+ * workspace's; a repo's own replaces it for that repo.
+ */
+@Serializable
+data class ClaudeConfigSource(
+    val id: String,
+    val workspaceId: String? = null,
+    val repoUrl: String? = null,
+    val sourceUrl: String,
+    val ref: String,
+    val subpath: String,
+    val resolvedSha: String? = null,
+    val enabled: Boolean,
+    val lastSyncedAt: Instant? = null,
+    val lastSyncError: String? = null,
+    val fileCount: Double? = null,
+    val totalSizeBytes: Double? = null,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+)
+
+@Serializable
+data class CreateClaudeConfigSourceInput(
+    val sourceUrl: String,
+    val ref: String? = null,
+    val subpath: String? = null,
+    val repoUrl: String? = null,
+    val enabled: Boolean? = null,
+)
+
+@Serializable
+data class UpdateClaudeConfigSourceInput(
+    val sourceUrl: String? = null,
+    val ref: String? = null,
+    val subpath: String? = null,
+    val enabled: Boolean? = null,
+)
+
 // endregion
 
 // region model-provider.ts

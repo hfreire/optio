@@ -606,6 +606,7 @@ export function startTaskWorker() {
               ownerUserId: runOwnerUserId,
               settings: task.settings,
               runId: task.id,
+              adapterEnv: agentConfig.env,
               ...(task.taskType === "coding" ? { controllerRunKind: "work-run" as const } : {}),
             },
             log,

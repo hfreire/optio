@@ -402,6 +402,7 @@ export function startPrReviewWorker() {
               // The pod reads the PR's diff — anyone's input — so its
               // connections carry no credentials.
               connectionSecrets: false,
+              adapterEnv: agentConfig.env,
             },
             log,
             agentConfig.setupFiles,

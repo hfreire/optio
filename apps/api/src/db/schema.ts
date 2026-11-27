@@ -1477,6 +1477,57 @@ export const installedSkillFiles = pgTable(
   (table) => [primaryKey({ columns: [table.skillId, table.path] })],
 );
 
+// ── Claude config repo ──────────────────────────────────────────────────────
+//
+// A dotclaude-style git repo synced into the database and written to
+// `/home/agent/.claude` in Claude Code pods. One per scope: the workspace's
+// (`repo_url` null) and, optionally, one per repo that replaces it.
+
+export const claudeConfigSources = pgTable(
+  "claude_config_sources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id"),
+    repoUrl: text("repo_url"), // null = the workspace's; set = that repo's override
+    sourceUrl: text("source_url").notNull(), // credential-free; the sealed columns hold a URL that signs in
+    encryptedSourceUrl: bytea("encrypted_source_url"),
+    sourceUrlIv: bytea("source_url_iv"),
+    sourceUrlAuthTag: bytea("source_url_auth_tag"),
+    ref: text("ref").notNull().default("main"),
+    subpath: text("subpath").notNull().default("."),
+    resolvedSha: text("resolved_sha"),
+    enabled: boolean("enabled").notNull().default(true),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    lastSyncError: text("last_sync_error"),
+    fileCount: integer("file_count"),
+    totalSizeBytes: integer("total_size_bytes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("claude_config_sources_scope_key").on(
+      sql`coalesce(${table.workspaceId}::text, '')`,
+      sql`coalesce(${table.repoUrl}, '')`,
+    ),
+  ],
+);
+
+export const claudeConfigFiles = pgTable(
+  "claude_config_files",
+  {
+    sourceId: uuid("source_id")
+      .notNull()
+      .references(() => claudeConfigSources.id, { onDelete: "cascade" }),
+    path: text("path").notNull(),
+    content: customType<{ data: Buffer; driverData: Buffer }>({
+      dataType: () => "bytea",
+    })("content").notNull(),
+    executable: boolean("executable").notNull().default(false),
+    resolvedSha: text("resolved_sha"),
+  },
+  (table) => [primaryKey({ columns: [table.sourceId, table.path] })],
+);
+
 // ── Scale-out: shared coordination state (docs/plans/scale-out.md §3) ────────
 
 /** What one instance holds for a while (services/lease-service.ts). */

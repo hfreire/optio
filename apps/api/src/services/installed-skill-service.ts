@@ -276,7 +276,7 @@ function matchesAgent(agentTypes: string[] | null, agentType: string | null): bo
 /**
  * Reject `..` segments and absolute paths. Empty / "." normalizes to ".".
  */
-function normalizeSubpath(raw?: string): string {
+export function normalizeSubpath(raw?: string): string {
   if (!raw) return DEFAULT_SUBPATH;
   const trimmed = raw.replace(/^\/+/, "").trim();
   if (!trimmed || trimmed === ".") return DEFAULT_SUBPATH;

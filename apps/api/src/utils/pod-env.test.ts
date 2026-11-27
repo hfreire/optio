@@ -19,6 +19,9 @@ import {
   buildEnvExports,
   buildPooledStartScript,
   CHECKOUT_REPO,
+  FILTER_CLAUDE_CONFIG_ENV,
+  PRUNE_CLAUDE_CONFIG,
+  REPORT_CLAUDE_CONFIG,
   gitBotEnv,
   gitBotIdentity,
   deliverStdinScript,
@@ -81,6 +84,15 @@ describe("buildEnvExports", () => {
     expect(buildEnvExports({ A: "1", OPTIO_SETUP_FILES: "e30=" })).toEqual([
       "export A='1'",
       "export -n OPTIO_SETUP_FILES='e30='",
+    ]);
+  });
+
+  it("assigns the config repo's manifest and report without exporting them", () => {
+    expect(
+      buildEnvExports({ OPTIO_CLAUDE_CONFIG_MANIFEST: "e30=", OPTIO_CLAUDE_CONFIG_REPORT: "e30=" }),
+    ).toEqual([
+      "export -n OPTIO_CLAUDE_CONFIG_MANIFEST='e30='",
+      "export -n OPTIO_CLAUDE_CONFIG_REPORT='e30='",
     ]);
   });
 
@@ -618,5 +630,195 @@ describe("the bot identity a pod commits as", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("PRUNE_CLAUDE_CONFIG", () => {
+  const run = (home: string, paths: string[] | null) =>
+    execFileSync("bash", ["-c", PRUNE_CLAUDE_CONFIG.join("\n")], {
+      env: {
+        ...process.env,
+        OPTIO_CLAUDE_HOME: home,
+        ...(paths
+          ? {
+              OPTIO_CLAUDE_CONFIG_MANIFEST: Buffer.from(JSON.stringify({ paths })).toString(
+                "base64",
+              ),
+            }
+          : {}),
+      },
+    }).toString();
+  const mk = (home: string, rel: string) => {
+    mkdirSync(join(home, rel, ".."), { recursive: true });
+    writeFileSync(join(home, rel), "x");
+  };
+  const manifest = (home: string) => join(home, ".optio-config-manifest");
+
+  it("removes what the previous manifest listed and the new set drops, nothing else", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    mk(home, "skills/old/SKILL.md");
+    mk(home, "skills/keep/SKILL.md");
+    mk(home, "projects/session.jsonl");
+    mk(home, "settings.json");
+    writeFileSync(manifest(home), JSON.stringify(["skills/old/SKILL.md", "skills/keep/SKILL.md"]));
+
+    run(home, ["skills/keep/SKILL.md"]);
+
+    expect(existsSync(join(home, "skills/old"))).toBe(false);
+    expect(existsSync(join(home, "skills/keep/SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, "projects/session.jsonl"))).toBe(true);
+    expect(existsSync(join(home, "settings.json"))).toBe(true);
+    expect(JSON.parse(readFileSync(manifest(home), "utf8"))).toEqual(["skills/keep/SKILL.md"]);
+  });
+
+  it("removes every listed file and the manifest when the source is gone", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    mk(home, "hooks/guard.sh");
+    mk(home, "CLAUDE.md");
+    writeFileSync(manifest(home), JSON.stringify(["hooks/guard.sh", "CLAUDE.md"]));
+
+    run(home, []);
+
+    expect(existsSync(join(home, "hooks"))).toBe(false);
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(false);
+    expect(existsSync(manifest(home))).toBe(false);
+    expect(existsSync(home)).toBe(true);
+  });
+
+  it("removes a settings.json the manifest lists (written by Optio, not an adapter)", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    mk(home, "settings.json");
+    writeFileSync(manifest(home), JSON.stringify(["settings.json"]));
+    run(home, []);
+    expect(existsSync(join(home, "settings.json"))).toBe(false);
+  });
+
+  it("never follows a manifest path out of ~/.claude or onto its own state", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    const outside = join(mkdtempSync(join(tmpdir(), "outside-")), "victim");
+    writeFileSync(outside, "x");
+    mk(home, "settings.json");
+    writeFileSync(
+      manifest(home),
+      JSON.stringify([outside, "../victim", ".optio-config-manifest", 7]),
+    );
+
+    run(home, []);
+
+    expect(existsSync(outside)).toBe(true);
+    expect(existsSync(join(home, "settings.json"))).toBe(true);
+    expect(existsSync(manifest(home))).toBe(false);
+  });
+
+  it("survives another run removing the same files at the same moment", async () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    const rels = Array.from({ length: 1500 }, (_, i) => `skills/s${i}/SKILL.md`);
+    for (const rel of rels) mk(home, rel);
+    writeFileSync(manifest(home), JSON.stringify(rels));
+    const env = {
+      ...process.env,
+      OPTIO_CLAUDE_HOME: home,
+      OPTIO_CLAUDE_CONFIG_MANIFEST: Buffer.from(JSON.stringify({ paths: [] })).toString("base64"),
+    };
+    const once = () =>
+      new Promise<number | null>((resolve) => {
+        const child = spawn("bash", ["-c", PRUNE_CLAUDE_CONFIG.join("\n")], { env });
+        child.on("close", resolve);
+      });
+    expect(await Promise.all([once(), once()])).toEqual([0, 0]);
+    expect(existsSync(join(home, "skills"))).toBe(false);
+  });
+
+  it("leaves no temp file beside the manifest", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    run(home, ["CLAUDE.md"]);
+    expect(readdirSync(home)).toEqual([".optio-config-manifest"]);
+  });
+
+  it("writes the first manifest and tolerates a corrupt one", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    run(home, ["CLAUDE.md"]);
+    expect(JSON.parse(readFileSync(manifest(home), "utf8"))).toEqual(["CLAUDE.md"]);
+    writeFileSync(manifest(home), "not json");
+    run(home, ["a"]);
+    expect(JSON.parse(readFileSync(manifest(home), "utf8"))).toEqual(["a"]);
+  });
+
+  it("does nothing without a manifest env", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    mk(home, "CLAUDE.md");
+    writeFileSync(manifest(home), JSON.stringify(["CLAUDE.md"]));
+    run(home, null);
+    expect(existsSync(join(home, "CLAUDE.md"))).toBe(true);
+  });
+});
+
+describe("REPORT_CLAUDE_CONFIG", () => {
+  const report = (payload: unknown, path = process.env.PATH ?? "") =>
+    execFileSync("bash", ["-c", REPORT_CLAUDE_CONFIG.join("\n")], {
+      env: {
+        ...process.env,
+        PATH: path,
+        OPTIO_CLAUDE_CONFIG_REPORT: Buffer.from(JSON.stringify(payload)).toString("base64"),
+      },
+    }).toString();
+
+  it("logs the notes and each hook executable that is not in the pod", () => {
+    const out = report({
+      notes: ["Warning: skill 'x' skipped"],
+      executables: [
+        { event: "Stop", exe: "optio-no-such-tool" },
+        { event: "Stop", exe: "~/.claude/hooks/none.sh" },
+        { event: "Stop", exe: "ls" },
+        { event: "Stop", exe: "$UNSET/x" },
+      ],
+    });
+    expect(out).toContain("[optio] Warning: skill 'x' skipped");
+    expect(out).toContain("Stop hook runs optio-no-such-tool, which is not in this pod");
+    expect(out).toContain("Stop hook runs ~/.claude/hooks/none.sh, which is not in this pod");
+    expect(out).not.toContain("runs ls");
+    expect(out).not.toContain("$UNSET");
+  });
+
+  it("prints nothing without a report", () => {
+    expect(
+      execFileSync("bash", ["-c", REPORT_CLAUDE_CONFIG.join("\n")], {
+        env: { ...process.env, OPTIO_CLAUDE_CONFIG_REPORT: "" },
+      }).toString(),
+    ).toBe("");
+  });
+});
+
+describe("FILTER_CLAUDE_CONFIG_ENV", () => {
+  const filter = (settings: unknown, keys: string[], podEnv: Record<string, string>) => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
+    execFileSync("bash", ["-c", FILTER_CLAUDE_CONFIG_ENV.join("\n")], {
+      env: {
+        ...process.env,
+        ...podEnv,
+        OPTIO_CLAUDE_HOME: home,
+        OPTIO_CLAUDE_CONFIG_ENV_KEYS: Buffer.from(JSON.stringify(keys)).toString("base64"),
+      },
+    });
+    return JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
+  };
+
+  it("drops a config env key the pod's env already has, whichever path set it", () => {
+    const out = filter(
+      { model: "x", env: { A: "adapter", GITLAB_HOST: "evil", MINE: "1" } },
+      ["GITLAB_HOST", "MINE"],
+      { GITLAB_HOST: "gitlab.example.com", A: "other" },
+    );
+    expect(out).toEqual({ model: "x", env: { A: "adapter", MINE: "1" } });
+  });
+
+  it("does nothing without the key list", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-home-"));
+    writeFileSync(join(home, "settings.json"), '{"env":{"A":"1"}}');
+    execFileSync("bash", ["-c", FILTER_CLAUDE_CONFIG_ENV.join("\n")], {
+      env: { ...process.env, OPTIO_CLAUDE_HOME: home, OPTIO_CLAUDE_CONFIG_ENV_KEYS: "" },
+    });
+    expect(readFileSync(join(home, "settings.json"), "utf8")).toBe('{"env":{"A":"1"}}');
   });
 });

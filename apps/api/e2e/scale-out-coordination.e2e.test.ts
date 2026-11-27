@@ -235,6 +235,7 @@ describe("scale-out coordination across two API servers", () => {
       ["token-validation", 1],
       ["reconcile-resync", 1],
       ["skill-sync", 1],
+      ["claude-config-sync", 1],
       ["housekeeping", 1],
     ];
     for (const [name, expected] of expectations) {

@@ -77,6 +77,18 @@ describe("POST /api/installed-skills", () => {
     }
   });
 
+  it.each(["https://169.254.169.254/x.git", "git@gitea.git.svc.cluster.local:acme/skills.git"])(
+    "rejects the internal source %s with 400",
+    async (sourceUrl) => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/installed-skills",
+        payload: { name: "x", sourceUrl },
+      });
+      expect(res.statusCode).toBe(400);
+    },
+  );
+
   it("rejects an invalid skill name", async () => {
     const res = await app.inject({
       method: "POST",

@@ -342,6 +342,7 @@ export function startPersistentAgentWorker() {
           settings: claimedAgent.settings,
           runId: turn.id,
           controllerRunKind: "turn" as const,
+          adapterEnv: env,
         };
         Object.assign(
           env,

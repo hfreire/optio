@@ -70,6 +70,7 @@ async function main() {
   const { startReconcileWorker, startReconcileResyncWorker, kickResync } =
     await import("./workers/reconcile-worker.js");
   const { startSkillSyncWorker } = await import("./workers/skill-sync-worker.js");
+  const { startClaudeConfigSyncWorker } = await import("./workers/claude-config-sync-worker.js");
   const { startConfigSyncWorker } = await import("./workers/config-sync-worker.js");
   const { startSweepWorker } = await import("./workers/sweep-worker.js");
   const { REPEAT_QUEUE_NAMES, removeLegacyRepeatables } = await import("./services/repeat-jobs.js");
@@ -351,6 +352,8 @@ async function main() {
 
   const skillSyncWorker = startSkillSyncWorker();
   logger.info("Skill sync worker started");
+  const claudeConfigSyncWorker = startClaudeConfigSyncWorker();
+  logger.info("Claude config sync worker started");
 
   const { startLocalSweepWorker } = await import("./workers/local-sweep-worker.js");
   const localSweepWorker = startLocalSweepWorker();
@@ -404,6 +407,7 @@ async function main() {
     await reconcileWorker.close();
     await reconcileResyncWorker.close();
     await skillSyncWorker.close();
+    await claudeConfigSyncWorker.close();
     await localSweepWorker.close();
     await sweepWorker.close();
     await deliveryWorker.close();
