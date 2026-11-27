@@ -800,7 +800,7 @@ export function WorkForm({ edit }: { edit?: EditTarget } = {}) {
   const signInHint = credential
     ? `Signs in with ${credential.label}.`
     : provider
-      ? `Reaches its models through ${provider.name} (${provider.region}).`
+      ? `Reaches its models through ${provider.name} (${provider.region ?? provider.baseUrl}).`
       : `Default uses the agent's usual sign-in${
           defaultCredential ? ` (${defaultCredential.label})` : ""
         }.`;

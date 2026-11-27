@@ -4,6 +4,7 @@ import dev.optio.core.model.CreateModelProviderInput
 import dev.optio.core.model.ModelProvider
 import dev.optio.core.model.ModelProviderAgent
 import dev.optio.core.model.ModelProviderCredentials
+import dev.optio.core.model.ModelProviderKind
 import dev.optio.core.model.ModelProviderModel
 import dev.optio.core.model.ModelProviderPodCredential
 import dev.optio.core.model.OptioJson
@@ -19,7 +20,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 
-// Model providers (Amazon Bedrock for Claude Code / Codex) and the secrets a piece of work can pick
+// Model providers (Amazon Bedrock for Claude Code / Codex, LiteLLM for Claude Code) and the secrets a piece of work can pick
 // for its pod: the endpoints the work form and Settings › Model providers share, plus the pure
 // helpers `@optio/shared`'s `model-provider.ts` exports (ported, since the generator emits types
 // only).
@@ -96,11 +97,20 @@ val ModelProvider.ownerLabel: String
         else -> "Private · ${ownerName ?: "someone"}"
     }
 
+/** "Bedrock" / "LiteLLM". */
+val ModelProvider.kindLabel: String
+    get() = if (kind == ModelProviderKind.LITELLM) "LiteLLM" else "Bedrock"
+
+/** The AWS region (Bedrock) or the proxy URL (LiteLLM). */
+val ModelProvider.location: String?
+    get() = if (kind == ModelProviderKind.LITELLM) baseUrl else region
+
 /** "Pods: access key" etc. */
 fun podCredentialLabel(kind: ModelProviderPodCredential): String = when (kind) {
     ModelProviderPodCredential.ACCESS_KEY -> "access key"
     ModelProviderPodCredential.BEARER_TOKEN -> "API key"
     ModelProviderPodCredential.AMBIENT -> "IAM role"
+    ModelProviderPodCredential.API_KEY -> "API key"
     ModelProviderPodCredential.NONE -> "machines only"
     ModelProviderPodCredential.UNKNOWN -> "unknown"
 }

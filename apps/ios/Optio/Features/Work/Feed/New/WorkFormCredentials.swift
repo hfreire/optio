@@ -91,7 +91,7 @@ extension WorkForm {
     /// The SF Symbol for a credential's method.
     static func credentialSymbol(_ c: AgentCredential) -> String {
         switch c.method {
-        case .bedrock: return "cloud"
+        case .bedrock, .litellm: return "cloud"
         case .oauthToken: return "person.badge.key"
         case .appServer: return "server.rack"
         case .githubToken: return "chevron.left.forwardslash.chevron.right"

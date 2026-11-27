@@ -1,13 +1,19 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { MODEL_PROVIDER_AGENTS, MODEL_PROVIDER_POD_CREDENTIALS } from "@optio/shared";
+import {
+  MODEL_PROVIDER_AGENTS,
+  MODEL_PROVIDER_KINDS,
+  MODEL_PROVIDER_POD_CREDENTIALS,
+  MAX_PROVIDER_MODELS,
+} from "@optio/shared";
 import { requireRole } from "../plugins/auth.js";
 import { isAuthDisabled } from "../services/oauth/index.js";
 import {
   ModelProviderError,
   createModelProvider,
   deleteModelProvider,
+  discoverProviderModels,
   listModelProviders,
   updateModelProvider,
   type ProviderViewer,
@@ -18,12 +24,14 @@ import { ErrorResponseSchema } from "../schemas/common.js";
 const modelSchema = z.object({
   id: z.string().min(1).max(200),
   label: z.string().max(100).optional(),
+  contextWindow: z.number().int().positive().max(100_000_000).optional(),
+  efforts: z.array(z.string().min(1).max(20)).max(10).optional(),
 });
 
 const modelsSchema = z
   .object({
-    "claude-code": z.array(modelSchema).max(50).optional(),
-    codex: z.array(modelSchema).max(50).optional(),
+    "claude-code": z.array(modelSchema).max(MAX_PROVIDER_MODELS).optional(),
+    codex: z.array(modelSchema).max(MAX_PROVIDER_MODELS).optional(),
   })
   .describe("Models offered per agent, in picker order (first = default)");
 
@@ -36,6 +44,7 @@ const credentialsSchema = z
       sessionToken: z.string().max(4096).optional(),
     }),
     z.object({ type: z.literal("bearer-token"), bearerToken: z.string().min(1).max(4096) }),
+    z.object({ type: z.literal("api-key"), apiKey: z.string().min(1).max(4096) }),
   ])
   .describe("Pod credentials (write-only; never returned)");
 
@@ -48,11 +57,18 @@ const createSchema = z
   .object({
     name: z.string().min(1).max(100),
     owner: z.enum(["workspace", "me"]),
-    kind: z.literal("bedrock"),
+    kind: z.enum(MODEL_PROVIDER_KINDS),
     agents: agentsSchema,
-    region: z.string().min(1).max(40),
+    region: z.string().min(1).max(40).optional().describe("Bedrock: the AWS region"),
+    baseUrl: z.string().min(1).max(500).optional().describe("LiteLLM: the proxy's URL"),
     models: modelsSchema.optional(),
     localAwsProfile: z.string().max(64).nullable().optional(),
+    localApiKeyEnv: z
+      .string()
+      .max(128)
+      .nullable()
+      .optional()
+      .describe("LiteLLM: the machine env var holding its key"),
     podCredential: podCredentialSchema.optional(),
     credentials: credentialsSchema.nullable().optional(),
   })
@@ -64,12 +80,23 @@ const updateSchema = z
     owner: z.enum(["workspace", "me"]).optional(),
     agents: agentsSchema.optional(),
     region: z.string().min(1).max(40).optional(),
+    baseUrl: z.string().min(1).max(500).optional(),
     models: modelsSchema.optional(),
     localAwsProfile: z.string().max(64).nullable().optional(),
+    localApiKeyEnv: z.string().max(128).nullable().optional(),
     podCredential: podCredentialSchema.optional(),
     credentials: credentialsSchema.nullable().optional(),
   })
   .describe("Body for updating a model provider (absent fields are kept)");
+
+const discoverSchema = z
+  .object({
+    kind: z.literal("litellm"),
+    baseUrl: z.string().min(1).max(500),
+    apiKey: z.string().min(1).max(4096).optional().describe("Absent = the provider's stored key"),
+    providerId: z.string().uuid().optional(),
+  })
+  .describe("Where to list models from: a key typed in the form, or a saved provider's");
 
 const idParams = z.object({ id: z.string().uuid() });
 const ProviderResponse = z.object({ provider: z.unknown() });
@@ -99,7 +126,8 @@ export async function modelProviderRoutes(rawApp: FastifyInstance) {
         operationId: "listModelProviders",
         summary: "List model providers",
         description:
-          "The organization's model providers (Amazon Bedrock for Claude Code / Codex) and " +
+          "The organization's model providers (Amazon Bedrock for Claude Code / Codex, " +
+          "LiteLLM for Claude Code) and " +
           "the caller's own. Admins also see other members' personal ones, read-only. " +
           "Stored credentials are never returned.",
         tags: ["Setup & Settings"],
@@ -138,6 +166,35 @@ export async function modelProviderRoutes(rawApp: FastifyInstance) {
           success: true,
         }).catch(() => {});
         return reply.status(201).send({ provider });
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
+
+  app.post(
+    "/api/model-providers/discover-models",
+    {
+      preHandler: [requireRole("member")],
+      schema: {
+        operationId: "discoverModelProviderModels",
+        summary: "List a proxy's models",
+        description:
+          "The models a LiteLLM key can call, with each one's context window and effort " +
+          "levels when the proxy reports them. Fills a provider's model list in Settings.",
+        tags: ["Setup & Settings"],
+        body: discoverSchema,
+        response: {
+          200: z.object({ models: z.array(modelSchema) }),
+          400: ErrorResponseSchema,
+          403: ErrorResponseSchema,
+          404: ErrorResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      try {
+        return reply.send({ models: await discoverProviderModels(req.body, providerViewer(req)) });
       } catch (err) {
         return sendError(reply, err);
       }

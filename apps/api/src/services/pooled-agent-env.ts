@@ -5,7 +5,11 @@ import {
 } from "@optio/agent-adapters";
 import { piProviderSecrets } from "./pi-provider-secrets.js";
 import { agentOptionsEnv } from "./agent-options-env.js";
-import { podProviderRuntime, resolveProviderForWork } from "./model-provider-service.js";
+import {
+  podProviderRuntime,
+  providerClaudeEffort,
+  resolveProviderForWork,
+} from "./model-provider-service.js";
 import {
   credentialRuntime,
   resolveCredentialForWork,
@@ -40,7 +44,21 @@ export async function pooledAgentEnv(
     ownerUserId,
     runsOn: "pod",
   });
-  const providerRuntime = providerRow ? podProviderRuntime(providerRow, agent.agentRuntime) : null;
+  const workOptionsEnv = agentOptionsEnv(agent.agentRuntime, agent.agentOptions, agent.model);
+  const providerRuntime = providerRow
+    ? podProviderRuntime(providerRow, agent.agentRuntime, workOptionsEnv.OPTIO_CLAUDE_MODEL)
+    : null;
+  const effort = workOptionsEnv.CLAUDE_CODE_EFFORT_LEVEL;
+  const optionsEnv =
+    effort && !providerClaudeEffort(providerRuntime, effort)
+      ? agentOptionsEnv(
+          agent.agentRuntime,
+          Object.fromEntries(
+            Object.entries(agent.agentOptions ?? {}).filter(([k]) => k !== "claudeEffort"),
+          ),
+          agent.model,
+        )
+      : workOptionsEnv;
   // A credential picked for the work (one of the agent's sign-in secrets):
   // its value signs the agent in and sets the auth mode, over the deployment's.
   const picked = providerRuntime
@@ -65,7 +83,7 @@ export async function pooledAgentEnv(
         credential,
       );
   const claudeAuthMode = providerRuntime
-    ? "bedrock"
+    ? providerRuntime.authMode
     : (credential?.claudeAuthMode ?? (await secret("CLAUDE_AUTH_MODE")) ?? "api-key");
 
   const env: Record<string, string> = {
@@ -78,7 +96,10 @@ export async function pooledAgentEnv(
     OPTIO_AGENT_TYPE: agent.agentRuntime,
     OPTIO_AUTH_MODE: claudeAuthMode,
     // `model` is the legacy field.
-    ...agentOptionsEnv(agent.agentRuntime, agent.agentOptions, agent.model),
+    ...optionsEnv,
+    ...(providerRuntime?.claudeContextWindow
+      ? { OPTIO_CLAUDE_CONTEXT_WINDOW: providerRuntime.claudeContextWindow }
+      : {}),
   };
 
   // OpenCode's custom endpoint: what the adapter puts in a Repo Task's env,
