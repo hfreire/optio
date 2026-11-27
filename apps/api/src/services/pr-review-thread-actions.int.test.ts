@@ -393,7 +393,28 @@ describe("submitReview unattended", () => {
   });
 });
 
+describe("submitReview on_pr_post", () => {
+  it("replies and resolves when resolveThreads is set", async () => {
+    const review = await insertReview({ summary: "s", threadActions: [resolveA, replyResolveB] });
+    const result = await submitReview(review.id, undefined, {
+      unattended: true,
+      resolveThreads: true,
+    });
+    expect(result.threadActionResults.map((r) => r.status)).toEqual(["done", "done"]);
+    expect(calls).toEqual(["review", "resolve:A", "reply:B", "resolve:B"]);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(hasPending(row)).toBe(false);
+  });
+});
+
 describe("parkThreadActionsForPerson", () => {
+  it("parks a resolve-only draft so on_pr_post stops retrying it", async () => {
+    const review = await insertReview({ threadActions: [resolveA] });
+    await parkThreadActionsForPerson(review.id);
+    const [row] = await db.select().from(prReviews).where(eq(prReviews.id, review.id));
+    expect(awaitsPerson(row)).toBe(true);
+  });
+
   it("makes the draft await a person and still lets a person submit it", async () => {
     const reply: PrReviewThreadAction = { threadId: "A", commentId: 1, action: "reply", body: "x" };
     const review = await insertReview({ threadActions: [reply] });
@@ -631,20 +652,20 @@ describe("auto-submit call sites", () => {
     return row;
   }
 
-  it("leaves a resolve-only draft for a person", async () => {
+  it("auto-submits a resolve-only draft and resolves the thread", async () => {
     const row = await autoDraft([{ threadId: "A", commentId: 1, action: "resolve" }]);
-    expect(row.state).toBe("ready");
-    expect(row.autoSubmitted).toBe(false);
-    expect(calls).toEqual([]);
+    expect(row.state).toBe("submitted");
+    expect(row.autoSubmitted).toBe(true);
+    expect(calls).toEqual(["resolve:A"]);
   });
 
-  it("still auto-submits a draft with a reply, leaving resolves pending", async () => {
+  it("auto-submits a draft with a reply and resolves too", async () => {
     const row = await autoDraft([
       { threadId: "A", commentId: 1, action: "resolve" },
       { threadId: "B", commentId: 2, action: "reply", body: "Why?" },
     ]);
     expect(row.state).toBe("submitted");
-    expect(calls).toEqual(["reply:B"]);
+    expect(calls).toEqual(["resolve:A", "reply:B"]);
   });
 
   it("tells the reconciler not to auto-submit a draft only a person can submit", async () => {
@@ -653,6 +674,12 @@ describe("auto-submit call sites", () => {
     const repoUrl = `https://github.com/o/snap-${++n}`;
     await insertRepo({ repoUrl, externalReviewMode: "on_pr_post" });
     const resolveOnly = await insertReview({ repoUrl, origin: "auto", threadActions: [resolveA] });
+    const parked = await insertReview({
+      repoUrl,
+      origin: "auto",
+      threadActions: [replyResolveB],
+      threadActionProgress: { B: { fp: fpB, authorMismatch: true } },
+    });
     const withSummary = await insertReview({
       repoUrl,
       origin: "auto",
@@ -663,7 +690,8 @@ describe("auto-submit call sites", () => {
       const snap = await buildWorldSnapshot({ kind: "pr-review", id });
       return snap?.run.kind === "pr-review" ? snap.run.spec.autoSubmitOnReady : undefined;
     };
-    expect(await spec(resolveOnly.id)).toBe(false);
+    expect(await spec(resolveOnly.id)).toBe(true);
+    expect(await spec(parked.id)).toBe(false);
     expect(await spec(withSummary.id)).toBe(true);
   });
 });

@@ -695,12 +695,13 @@ export async function enqueueReviewRun(
   return run;
 }
 
-/** Stops unattended retries: an author-mismatched reply is skipped by auto-submit and left for a person. */
+/** Stops unattended retries: every pending step is left for a person, whom auto-submit skips. */
 export async function parkThreadActionsForPerson(id: string): Promise<void> {
   const review = await getPrReview(id);
   if (!review) return;
   for (const a of review.threadActions) {
-    if (a.action !== "resolve" && pendingThreadSteps(a).reply && !a.authorMismatch) {
+    const pending = pendingThreadSteps(a);
+    if ((pending.reply || pending.resolve) && !a.authorMismatch) {
       await recordProgress(id, a.threadId, "authorMismatch", threadActionFingerprint(a));
     }
   }
@@ -815,7 +816,7 @@ export async function parseReviewOutput(runId: string, draftFile = ""): Promise<
     !(drafted && awaitsPerson(drafted))
   ) {
     try {
-      await submitReview(review.id, undefined, { unattended: true });
+      await submitReview(review.id, undefined, { unattended: true, resolveThreads: true });
       await db
         .update(prReviews)
         .set({ autoSubmitted: true, updatedAt: new Date() })
@@ -907,7 +908,7 @@ async function releaseSubmit(id: string): Promise<void> {
 export async function submitReview(
   id: string,
   userId?: string,
-  opts: { unattended?: boolean } = {},
+  opts: { unattended?: boolean; resolveThreads?: boolean } = {},
 ): Promise<{
   review: PrReview;
   reviewUrl?: string;
@@ -936,7 +937,7 @@ export async function submitReview(
 async function postReview(
   review: PrReview,
   userId: string | undefined,
-  opts: { unattended?: boolean },
+  opts: { unattended?: boolean; resolveThreads?: boolean },
 ): Promise<{
   review: PrReview;
   reviewUrl?: string;
@@ -989,6 +990,7 @@ async function postReview(
   let firstActionError: unknown;
   const threadActionResults = await runThreadActions(platform, ri, review.prNumber, threadActions, {
     unattended: opts.unattended,
+    resolveThreads: opts.resolveThreads,
     progress: review.threadActionProgress,
     postedReviewIds,
     otherLogins: async () => {

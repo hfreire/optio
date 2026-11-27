@@ -177,13 +177,15 @@ export function isThreadsOnly(d: DraftContent): boolean {
   );
 }
 
-/** Only a person can submit this draft: unattended runs would do nothing with it. */
+/** Only a person can submit this draft: an on_pr_post run would do nothing with it. */
 export function awaitsPerson(d: DraftContent): boolean {
   return (
     isThreadsOnly(d) &&
-    !withProgress(d).threadActions.some(
-      (a) => a.action === "reply" && !a.authorMismatch && pendingThreadSteps(a).reply,
-    )
+    !withProgress(d).threadActions.some((a) => {
+      if (a.authorMismatch) return false;
+      const s = pendingThreadSteps(a);
+      return s.reply || s.resolve;
+    })
   );
 }
 
@@ -243,6 +245,8 @@ export async function runThreadActions(
   actions: PrReviewThreadAction[],
   opts: {
     unattended?: boolean;
+    /** Lets an unattended run resolve threads; only on_pr_post auto-submits set it, never an agent. */
+    resolveThreads?: boolean;
     progress?: PrReviewThreadProgress;
     /** Other accounts Optio posts as, e.g. the server token when a person submits. */
     otherLogins?: () => Promise<string[]>;
@@ -283,11 +287,11 @@ export async function runThreadActions(
       results.push({ ...base, status: "done" });
       continue;
     }
-    if (opts.unattended && needsResolve) {
+    if (opts.unattended && !opts.resolveThreads && needsResolve) {
       results.push({
         ...base,
         status: "skipped",
-        error: "Left pending: only a person submitting the review resolves threads",
+        error: "Left pending: only a person or an on_pr_post auto-submit resolves threads",
       });
       continue;
     }

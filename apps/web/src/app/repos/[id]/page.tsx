@@ -1040,7 +1040,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ id: strin
                 {externalReviewMode === "on_pr_hold" &&
                   "Optio will auto-generate a review and hold it as a draft for you to edit and submit manually — nothing is posted to the platform until you approve."}
                 {externalReviewMode === "on_pr_post" &&
-                  "Optio will auto-generate AND auto-post the review as a comment on the PR."}
+                  "Optio will auto-generate AND auto-post the review as a comment on the PR, and reply to and resolve its own review threads once they are addressed."}
               </p>
             </div>
 

@@ -377,6 +377,22 @@ describe("runThreadActions", () => {
     expect(results[1].error).toContain("pending");
   });
 
+  it("unattended with resolveThreads: replies and resolves", async () => {
+    const { p, calls } = platform();
+    const results = await runThreadActions(
+      p,
+      ri,
+      5,
+      [
+        { threadId: "a", commentId: 1, action: "resolve" },
+        { threadId: "b", commentId: 2, action: "reply_resolve", body: "Fixed" },
+      ],
+      { unattended: true, resolveThreads: true },
+    );
+    expect(calls).toEqual(["resolve:a", "reply:b:Fixed", "resolve:b"]);
+    expect(results.map((r) => r.status)).toEqual(["done", "done"]);
+  });
+
   it("skips and reports on a platform without thread support", async () => {
     const p = {} as unknown as GitPlatform;
     const [r] = await runThreadActions(p, ri, 5, [
@@ -602,10 +618,18 @@ describe("awaitsPerson", () => {
   const resolve: PrReviewThreadAction = { threadId: "a", commentId: 1, action: "resolve" };
   const reply: PrReviewThreadAction = { threadId: "b", commentId: 2, action: "reply", body: "x" };
 
-  it("is true for a resolve-only draft that posts nothing", () => {
+  it("is false for a resolve-only draft: on_pr_post resolves it", () => {
     expect(isThreadsOnly(draft([resolve]))).toBe(true);
-    expect(awaitsPerson(draft([resolve]))).toBe(true);
-    expect(awaitsPerson(draft([{ ...resolve, action: "reply_resolve", body: "x" }]))).toBe(true);
+    expect(awaitsPerson(draft([resolve]))).toBe(false);
+    expect(awaitsPerson(draft([{ ...resolve, action: "reply_resolve", body: "x" }]))).toBe(false);
+  });
+
+  it("is true once every step landed", () => {
+    expect(
+      awaitsPerson(
+        draft([resolve], { a: { fp: threadActionFingerprint(resolve), resolved: true } }),
+      ),
+    ).toBe(true);
   });
 
   it("is false when an unattended reply or a review post can still happen", () => {
@@ -616,9 +640,7 @@ describe("awaitsPerson", () => {
 
   it("is true again once the only unattended reply landed or was refused", () => {
     expect(
-      awaitsPerson(
-        draft([resolve, reply], { b: { fp: threadActionFingerprint(reply), replied: true } }),
-      ),
+      awaitsPerson(draft([reply], { b: { fp: threadActionFingerprint(reply), replied: true } })),
     ).toBe(true);
     expect(
       awaitsPerson(draft([reply], { b: { fp: threadActionFingerprint(reply), refused: true } })),

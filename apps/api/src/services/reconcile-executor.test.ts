@@ -1216,6 +1216,20 @@ describe("reconcile-executor — reattach and requeueRun", () => {
         cause,
       );
 
+    it("auto-submits with thread resolving allowed", async () => {
+      mockSubmitReview.mockResolvedValue({ review: {}, threadActionResults: [] });
+
+      await executeAction(
+        { kind: "submitReview", trigger: "auto", reason: "r" },
+        prReviewSnapshot(0),
+      );
+
+      expect(mockSubmitReview).toHaveBeenCalledWith(expect.any(String), undefined, {
+        unattended: true,
+        resolveThreads: true,
+      });
+    });
+
     it("honours a rate-limit cooldown carried by the failed thread action", async () => {
       mockSubmitReview.mockRejectedValue(
         notApplied(new GitHubApiError(429, "slow down", { retryAfterMs: 120000 })),
