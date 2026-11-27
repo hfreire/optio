@@ -8,9 +8,11 @@ import {
   classifyRunOutcome,
   inferExitCode,
   ingestPrToolCallLine,
+  runAuthModes,
   runResultColumns,
   shouldEscalateNoPr,
 } from "./task-worker.js";
+import { credentialRuntime } from "../services/agent-credential-service.js";
 import { buildInitialClaudeStreamMessage } from "../services/pooled-agent-command.js";
 import { ClaudeCodeAdapter } from "@optio/agent-adapters";
 import { PrToolCallTracker, shellQuote } from "@optio/shared";
@@ -869,5 +871,53 @@ describe("runResultColumns", () => {
   it("writes no error column when the run has no error", () => {
     expect(runResultColumns({ summary: "ok" })).toEqual({ resultSummary: "ok" });
     expect(runResultColumns({})).toEqual({ resultSummary: undefined });
+  });
+});
+
+describe("runAuthModes", () => {
+  const deployment = {
+    claudeAuthMode: "api-key",
+    codexAuthMode: "app-server",
+    codexAppServerUrl: "http://deployment",
+    geminiAuthMode: "api-key",
+  } as const;
+
+  it("keeps the deployment's modes when the work picked no credential", () => {
+    expect(runAuthModes(deployment, null)).toEqual(deployment);
+  });
+
+  it("signs Claude Code in with a picked OAuth token over the deployment's API key", () => {
+    const credential = credentialRuntime("claude-code", {
+      secretName: "CLAUDE_CODE_OAUTH_TOKEN",
+      value: "tok",
+    });
+    expect(runAuthModes(deployment, credential).claudeAuthMode).toBe("oauth-token");
+  });
+
+  it("drops the deployment's Codex app server when the work picked an API key", () => {
+    const credential = credentialRuntime("codex", { secretName: "OPENAI_API_KEY", value: "k" });
+    expect(runAuthModes(deployment, credential)).toMatchObject({
+      codexAuthMode: "api-key",
+      codexAppServerUrl: undefined,
+    });
+  });
+
+  it("points Codex at a picked app server", () => {
+    const credential = credentialRuntime("codex", {
+      secretName: "CODEX_APP_SERVER_URL",
+      value: "http://picked",
+    });
+    expect(runAuthModes({ ...deployment, codexAuthMode: "api-key" }, credential)).toMatchObject({
+      codexAuthMode: "app-server",
+      codexAppServerUrl: "http://picked",
+    });
+  });
+
+  it("switches Gemini to Vertex AI for a picked project", () => {
+    const credential = credentialRuntime("gemini", {
+      secretName: "GOOGLE_CLOUD_PROJECT",
+      value: "p",
+    });
+    expect(runAuthModes(deployment, credential).geminiAuthMode).toBe("vertex-ai");
   });
 });
